@@ -5,9 +5,16 @@
 from functools import partial
 import os.path
 
-from PyQt5.QtCore import QObject
+from PyQt5.QtCore import QObject, Qt
 from PyQt5 import QtWidgets
 import numpy as np
+
+
+def show_message(parent, icon, title, text):
+    """Show a message box whose text can be selected and copied."""
+    box = QtWidgets.QMessageBox(icon, title, text, QtWidgets.QMessageBox.Ok, parent)
+    box.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+    return box.exec_()
 
 #from utilities.utilities import *
 from ia.widgets.ImageAnalysisWidget import ImageAnalysisWidget
@@ -66,6 +73,7 @@ class ImageAnalysisController(QObject):
         
 
         self.display_window.crop_btn.clicked.connect(self.autocrop_btn_callback)
+        self.display_window.rot_angle_edit.editingFinished.connect(self.rot_angle_callback)
       
         self.display_window.edge_roi_1.sigRegionChangeFinished.connect(self.roi_changed_callback)
         self.display_window.edge_roi_2.sigRegionChangeFinished.connect(self.roi_changed_callback) 
@@ -76,7 +84,17 @@ class ImageAnalysisController(QObject):
 
         self.display_window.threshold_num.editingFinished.connect(self.threshold_num_callback)
 
-        self.display_window.file_widget.export_btn.clicked.connect(self.save_btn_callback )
+        self.display_window.file_widget.export_btn.clicked.connect(self.save_btn_callback)
+        
+        # Manual measurement connections
+        self.display_window.measurement_mode_group.buttonClicked.connect(self.measurement_mode_changed)
+        self.display_window.clear_points_btn.clicked.connect(self.clear_manual_points)
+        
+        # Connect mouse click on the source image for manual measurement
+        self.display_window.plots['src'].scene().sigMouseClicked.connect(self.on_image_plot_click)
+
+        # px -> um calibration input (below the file list)
+        self.display_window.file_widget.calibration_edit.textChanged.connect(self.calibration_changed)
 
     def save_btn_callback(self):
         filename = save_file_dialog(self.display_window, 'Save as...', self.folder_path, '*.csv', True)
@@ -134,6 +152,8 @@ class ImageAnalysisController(QObject):
             abs_plot = self.display_window.abs_plt
             
             abs_datas = []
+
+            
             #legends = [self.display_window.edge1_plt_legend, self.display_window.edge2_plt_legend]
         
             for i, roi in enumerate(self.model.rois):
@@ -163,6 +183,9 @@ class ImageAnalysisController(QObject):
             std_dev = np.std(edge2_y - edge1_y)
 
             output_txt = "mean: " + str(round(y_diff,1)) + '; std: ' +str(round(std_dev,1))
+            cal = self.model.settings.get('calibration_um_per_pixel')
+            if cal:
+                output_txt += '  (%.2f um)' % (y_diff * cal)
             self.display_window.result_lbl.setText(output_txt)
 
             data_x = np.array([])
@@ -173,7 +196,13 @@ class ImageAnalysisController(QObject):
                 
             abs_plot.setData(data_x, data_y)
             fname = self.model.filename
-            self.display_window.file_widget.fileModel.set_fname_result(fname, {'mean':str(round(y_diff,1)), 'std.dev':str(round(std_dev,1))})
+
+            y_0 = self.model.settings['crop_limits'][0][1]
+
+            self.display_window.file_widget.fileModel.set_fname_result(fname, {'mean':str(round(y_diff,1)), 
+                                                                               'std.dev':str(round(std_dev,1)),
+                                                                               'edge1':str(round(np.mean(edge1_y)+y_0,1)),
+                                                                               'edge2':str(round(np.mean(edge2_y)+y_0,1))})
             self.display_window.file_widget.repaint()
 
     def update_frame(self):
@@ -229,7 +258,7 @@ class ImageAnalysisController(QObject):
 
     def open_btn_callback(self, *args, **kwargs):
         
-        filename = open_file_dialog(None, "Select Image File.",filter='*.png;*.tif;*.bmp')
+        filename = open_file_dialog(None, "Select Image File.",filter='*.png;*.tif;*.bmp;*.jpg')
         
         if len(filename):
             path = os.path.split(filename)[0]
@@ -255,16 +284,35 @@ class ImageAnalysisController(QObject):
         self.load_file(filename)
 
     def load_file(self, filename):
-        
-            
-        self.model.load_file(filename)
-        self.display_window.fname_lbl.setText(os.path.split( filename)[-1])
+
+        # Read the image. If this fails, tell the user instead of failing
+        # silently (a windowed .exe has no console to print the traceback to).
+        try:
+            self.model.load_file(filename)
+        except Exception as e:
+            show_message(
+                self.display_window, QtWidgets.QMessageBox.Critical, "Image load error",
+                "Could not load image:\n%s\n\n%s" % (filename, e))
+            return
+
+        self.display_window.fname_lbl.setText(os.path.split(filename)[-1])
         self.display_window.imgs['src'].setImage(self.model.src)
 
-        self.update_crop()
-        self.model.filter_image()
-        self.update_frame()
-        self.update_cropped()
+        # Automatic crop / edge detection is tuned for specific sample
+        # geometries and may fail on other images. Don't let that hide the
+        # loaded image or block Manual measurement mode.
+        try:
+            self.update_crop()
+            self.model.filter_image()
+            self.update_frame()
+            self.update_cropped()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            show_message(
+                self.display_window, QtWidgets.QMessageBox.Warning, "Automatic processing failed",
+                "The image loaded, but automatic edge detection failed:\n\n%s\n\n"
+                "Switch to Manual mode to measure by clicking two points." % e)
 
     def update_crop(self, *args, **kwargs):
         
@@ -285,6 +333,22 @@ class ImageAnalysisController(QObject):
             self.update_crop()
             self.model.filter_image()
             self.update_frame()
+
+    def rot_angle_callback(self):
+
+        filename = self.model.filename
+        rot_angle= self.display_window.rot_angle_edit.value()
+        self.model.settings['rotation_angle']= rot_angle
+        if filename != '':
+            self.model.load_file(filename)
+            self.display_window.fname_lbl.setText(os.path.split( filename)[-1])
+            self.display_window.imgs['src'].setImage(self.model.src)
+
+            self.update_crop()
+            self.model.filter_image()
+            self.update_frame()
+            self.update_cropped()
+         
 
     def crop_roi_changed_callback(self, roi:pg.graphicsItems.ROI.ROI):
         self.display_window.crop_btn.setChecked(False)
@@ -332,6 +396,119 @@ class ImageAnalysisController(QObject):
         for i, roi in enumerate(rois):
             roi.edge_type = edges[i]
             
+
+    def measurement_mode_changed(self):
+        """Handle switching between automatic and manual measurement modes."""
+        if self.display_window.mode_auto_btn.isChecked():
+            self.model.measurement_mode = 'automatic'
+            self.display_window.manual_mode_status.setText('Auto')
+            self.display_window.manual_mode_status.setStyleSheet("QLabel { color: black; font-weight: bold; }")
+            self.display_window.compute_btn.setEnabled(True)
+            self.display_window.clear_points_btn.setEnabled(False)
+            # Clear manual measurement overlay and restore automatic results.
+            self.clear_manual_points()
+            if self.model.src is not None:
+                self.update_cropped()
+        else:
+            self.model.measurement_mode = 'manual'
+            self.display_window.manual_mode_status.setText('Manual - click top then bottom of the sample')
+            self.display_window.manual_mode_status.setStyleSheet("QLabel { color: green; font-weight: bold; }")
+            self.display_window.compute_btn.setEnabled(False)
+            self.display_window.clear_points_btn.setEnabled(True)
+
+    def clear_manual_points(self):
+        """Clear the selected measurement points."""
+        self.model.manual_measurement.clear()
+        self.display_window.manual_points_plot.setData([], [])
+        self.display_window.manual_line_plot.setData([], [])
+        self.display_window.result_lbl.setText('')
+        self.display_window.manual_mode_status.setText('Manual - Click on image')
+
+    def on_image_plot_click(self, event):
+        """Handle mouse clicks on the source image for manual measurement."""
+        if self.model.measurement_mode != 'manual':
+            return
+        if self.model.src is None:
+            return
+        if event.button() != 1:  # Only handle left mouse clicks
+            return
+
+        # The subplots share one scene, so ignore clicks outside the source image.
+        vb = self.display_window.plots['src'].getViewBox()
+        scene_pos = event.scenePos()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            return
+
+        view_coords = vb.mapSceneToView(scene_pos)
+        x = view_coords.x()
+        y = view_coords.y()
+
+        mm = self.model.manual_measurement
+        if not mm.is_complete():
+            if mm.point1 is None:
+                mm.set_point1(x, y)
+                status_text = 'Top point set. Click the bottom of the sample.'
+            else:
+                # Force a vertical line: keep point 1's x so only the
+                # top-to-bottom (y) length is measured for a cylindrical sample.
+                mm.set_point2(mm.point1[0], y)
+                status_text = 'Both points set. See Length above.'
+        else:
+            # Start a fresh measurement on the next click after two points.
+            mm.clear()
+            mm.set_point1(x, y)
+            status_text = 'Top point set. Click the bottom of the sample.'
+
+        self.update_manual_measurement_visualization()
+        self.display_window.manual_mode_status.setText(status_text)
+
+    def update_manual_measurement_visualization(self):
+        """Update the visualization of selected points and connecting line."""
+        mm = self.model.manual_measurement
+
+        points_x = []
+        points_y = []
+        if mm.point1 is not None:
+            points_x.append(mm.point1[0])
+            points_y.append(mm.point1[1])
+        if mm.point2 is not None:
+            points_x.append(mm.point2[0])
+            points_y.append(mm.point2[1])
+        self.display_window.manual_points_plot.setData(points_x, points_y)
+
+        if mm.is_complete():
+            line_x = [mm.point1[0], mm.point2[0]]
+            line_y = [mm.point1[1], mm.point2[1]]
+            self.display_window.manual_line_plot.setData(line_x, line_y)
+
+            # Vertical (top-to-bottom) length in real source-image pixels.
+            dy = abs(mm.point2[1] - mm.point1[1])
+
+            cal = self.model.settings.get('calibration_um_per_pixel')
+            if cal:
+                result_text = "Length: %.1f px = %.2f um" % (dy, dy * cal)
+            else:
+                result_text = "Length: %.1f px" % dy
+            self.display_window.result_lbl.setText(result_text)
+        else:
+            self.display_window.manual_line_plot.setData([], [])
+
+    def calibration_changed(self, *args, **kwargs):
+        """Read the '1 px = X um' box and refresh the current result."""
+        txt = self.display_window.file_widget.calibration_edit.text().strip()
+        try:
+            val = float(txt)
+            if val <= 0:
+                val = None
+        except (ValueError, TypeError):
+            val = None
+        self.model.settings['calibration_um_per_pixel'] = val
+
+        # Refresh whichever result is currently shown.
+        if self.model.measurement_mode == 'manual':
+            self.update_manual_measurement_visualization()
+        elif self.model.src is not None and self.display_window.compute_btn.isChecked():
+            self.update_cropped()
 
     def preferences_module(self, *args, **kwargs):
         pass

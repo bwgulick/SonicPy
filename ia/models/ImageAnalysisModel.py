@@ -4,6 +4,7 @@ from utilities.utilities import *
 import numpy as np
 
 from scipy.signal import medfilt2d
+from scipy.ndimage import rotate
 
 from um.models.tek_fileIO import *
 
@@ -14,12 +15,54 @@ import numpy as np
 
 print(cv2.__file__)
 
-from skimage.transform import resize
+#from skimage.transform import resize
 from scipy import interpolate
 import copy
 
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
+
+class ManualMeasurement():
+    """Handles manual point-based distance measurements in X-ray images."""
+    def __init__(self):
+        self.point1 = None  # (x, y) in image coordinates
+        self.point2 = None  # (x, y) in image coordinates
+        self.distance_pixels = None
+        self.calibration_um_per_pixel = None  # If set, can calculate micron distance
+    
+    def set_point1(self, x, y):
+        """Set the first measurement point."""
+        self.point1 = (x, y)
+    
+    def set_point2(self, x, y):
+        """Set the second measurement point."""
+        self.point2 = (x, y)
+    
+    def calculate_distance(self):
+        """Calculate the distance between two points in pixels."""
+        if self.point1 is None or self.point2 is None:
+            return None
+        
+        x1, y1 = self.point1
+        x2, y2 = self.point2
+        self.distance_pixels = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        return self.distance_pixels
+    
+    def get_distance_microns(self):
+        """Get distance in micrometers if calibration is available."""
+        if self.distance_pixels is None or self.calibration_um_per_pixel is None:
+            return None
+        return self.distance_pixels * self.calibration_um_per_pixel
+    
+    def clear(self):
+        """Clear the measurement points."""
+        self.point1 = None
+        self.point2 = None
+        self.distance_pixels = None
+    
+    def is_complete(self):
+        """Check if both points are set."""
+        return self.point1 is not None and self.point2 is not None
 
 class ImageROI():
     def __init__(self, image, pos, size):
@@ -88,7 +131,7 @@ class ImageROI():
         return y_test_weighted
 
     def get_background(self, img, pad ):
-        
+
         (m,n) = img.shape
         remove_index_x= range(pad, m-pad)
         img_del = np.delete(img, remove_index_x, 0)
@@ -96,9 +139,18 @@ class ImageROI():
         y = np.asarray(range(n))
         new_y = np.delete(x, remove_index_x)
         new_x = y
-        z = img_del
-        f = interpolate.interp2d(new_x, new_y, z, kind='linear')
-        znew = f(y, x)
+        z = img_del.astype(float)
+
+        # Linearly interpolate/extrapolate the background across the full image
+        # height from the retained top/bottom bands. (scipy.interpolate.interp2d
+        # was removed in SciPy 1.14; RegularGridInterpolator is the replacement.)
+        rgi = interpolate.RegularGridInterpolator(
+            (new_y.astype(float), new_x.astype(float)), z,
+            method='linear', bounds_error=False, fill_value=None)
+        rows, cols = np.meshgrid(x.astype(float), y.astype(float), indexing='ij')
+        pts = np.stack([rows.ravel(), cols.ravel()], axis=-1)
+        znew = rgi(pts).reshape(m, n)
+
         bg_image = cv2.GaussianBlur(znew,(17,17),sigmaX=17, sigmaY=17)
         return bg_image
 
@@ -110,13 +162,17 @@ class ImageAnalysisModel():
         self.cropped = None
         self.cropped_resized = None
         self.rois = []
+        self.manual_measurement = ManualMeasurement()
+        self.measurement_mode = 'automatic'  # 'automatic' or 'manual'
         self.settings = {'horizontal_bin':15, 
                          'median_kernel_size':3, 
                          'image_bits':8,
                          'crop_limits':[],
                          'edges_roi':  [],
                          'edge_polynomial_order':[2,2],
-                         'edge_fit_threshold':[0.3,0.3]} 
+                         'edge_fit_threshold':[0.3,0.3],
+                         'rotation_angle':0,
+                         'calibration_um_per_pixel': None}  # Optional calibration 
 
     def add_ROI(self, selected,pos, size):
 
@@ -132,6 +188,14 @@ class ImageAnalysisModel():
         [[x, y],[width, height]] = crop_limits
         self.cropped = src[y: y+height,x: x+ width]
 
+    def resize_without_skimage(self, image, horizontal_bin):
+        # Calculate the new width
+        new_width = image.shape[1] // horizontal_bin
+        
+        # Resize the image
+        resized_image = np.mean(image[:, :new_width * horizontal_bin].reshape(image.shape[0], new_width, horizontal_bin), axis=2)
+        
+        return resized_image
 
     def filter_image(self):
         horizontal_bin = self.settings['horizontal_bin']
@@ -143,8 +207,7 @@ class ImageAnalysisModel():
         image = medfilt2d(cropped,kernel_size=median_kernel_size) 
         
 
-        image_resized = resize(image, (image.shape[0] , image.shape[1] // horizontal_bin),
-                       anti_aliasing=True)
+        image_resized = self.resize_without_skimage(image, horizontal_bin)
 
         self.cropped_resized = image_resized
 
@@ -161,9 +224,85 @@ class ImageAnalysisModel():
         #self.base_surface = self.get_base_surface(image)
         self.image = image # - self.base_surface
 
+    @staticmethod
+    def read_image_gray(fname):
+        """Read an image file as a 2D grayscale float array scaled to the 0..255
+        range used by the processing pipeline.
+
+        Robust to:
+          - non-ASCII paths on Windows (cv2.imread returns None for these), by
+            reading the raw bytes and using cv2.imdecode
+          - 16-bit / float TIFFs from X-ray detectors (rescaled to 8-bit range)
+          - color images (converted to grayscale)
+          - files cv2 can't decode (falls back to Pillow)
+
+        Raises IOError with a clear message if the file cannot be read.
+        """
+        img = None
+
+        # Unicode-safe read: bypass cv2.imread's broken handling of non-ASCII
+        # Windows paths by decoding the raw bytes ourselves.
+        try:
+            buf = np.fromfile(fname, dtype=np.uint8)
+            if buf.size:
+                img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+        except Exception:
+            img = None
+
+        # Plain read as a second attempt.
+        if img is None:
+            try:
+                img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
+            except Exception:
+                img = None
+
+        # tifffile handles the 16-bit / compressed / BigTIFF variants produced
+        # by X-ray detectors that OpenCV's libtiff build often can't decode.
+        errors = []
+        if img is None:
+            try:
+                import tifffile
+                img = tifffile.imread(fname)
+            except Exception as e:
+                errors.append("tifffile: %s" % e)
+
+        # Pillow as an additional fallback for other formats.
+        if img is None:
+            try:
+                from PIL import Image
+                img = np.asarray(Image.open(fname))
+            except Exception as e:
+                errors.append("PIL: %s" % e)
+
+        if img is None:
+            raise IOError("Unable to read image file:\n%s\n\n%s" %
+                          (fname, "\n".join(errors) if errors else "unknown decode error"))
+
+        img = np.asarray(img)
+        if img.size == 0:
+            raise IOError("Image file is empty or unreadable:\n%s" % fname)
+
+        # Collapse color images to grayscale (imdecode returns BGR order).
+        if img.ndim == 3:
+            img = img[..., :3].astype(float).mean(axis=2)
+
+        img = img.astype(float)
+
+        # Scale higher-bit-depth data into the 8-bit range the pipeline expects.
+        mx = float(img.max()) if img.size else 0.0
+        if mx > 255.0:
+            img = img / mx * 255.0
+
+        return img
+
     def load_file(self, fname, autocrop=False):
         self.filename = fname
-        src = np.flip(np.asarray(cv2.imread(fname,0),dtype=np.float),axis=0)
+        img = self.read_image_gray(fname)
+        src = np.flip(img, axis=0)
+        angle = self.settings.get('rotation_angle', 0)
+        if angle:
+            src = rotate(src, angle, reshape=False)
+
         self.src = src
         
 

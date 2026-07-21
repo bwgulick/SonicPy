@@ -9,7 +9,7 @@ from um.models.tek_fileIO import *
 from utilities.utilities import *
 import logging, os, struct, sys
 import pyvisa as visa
-from um.models.PyTektronixScope import TektronixScope
+from um.models.PyTektronixScope_MSO import TektronixScope
 from PyQt5.QtCore import QThread, pyqtSignal
 import time
 from datetime import datetime
@@ -24,12 +24,13 @@ from utilities.HelperModule import get_partial_index, get_partial_value
 
 from .. import  resources_path
 
-class Scope_DPO5104(Scope, pvModel):
+class Scope_MSO54(Scope, pvModel):
     waveform_updated_signal = pyqtSignal(dict)
     channel_changed_signal = pyqtSignal()
     model_value_changed_signal = pyqtSignal(dict)
 
     def __init__(self, parent, visa_hostname='143', offline = False):
+        
         
         dummy_data_path = os.path.join(resources_path,'anvil.csv')
         self.virtual_data = read_tek_csv(dummy_data_path)
@@ -47,7 +48,8 @@ class Scope_DPO5104(Scope, pvModel):
         
         if not offline:
             self.connected = self.connect(self.visa_hostname)
-        
+        else:
+            self.scope_object = None
         
         
         self.data_stop = 10000
@@ -115,16 +117,25 @@ class Scope_DPO5104(Scope, pvModel):
 
         self.create_pvs(self.tasks)
 
+        data_stop = self.data_stop
+        ch = self.selected_channel
+        print('about to read')
+        if self.connected:
+            waveform  = self.scope_object.read_data_one_channel( data_start=1, 
+                                                        data_stop=data_stop,
+                                                        x_axis_out=True)
+            print(len(waveform))
+
     def connect(self, hostname):
         
-        self.DPO5000 = TektronixScope(hostname)
-        return self.DPO5000.connect()
+        self.scope_object = TektronixScope(hostname)
+        return self.scope_object.connect()
         
         
 
     def disconnect(self):
         if self.connected:
-            self.DPO5000.disconnect()
+            self.scope_object.disconnect()
 
     '''def clear_bg(self):
         waveform = None
@@ -171,7 +182,7 @@ class Scope_DPO5104(Scope, pvModel):
     def _set_clear_all(self, clear):
 
         #print('clear all')
-        self.DPO5000.clear()
+        self.scope_object.clear()
 
     def _set_erase(self, param):
         if param:
@@ -196,7 +207,7 @@ class Scope_DPO5104(Scope, pvModel):
 
     def _get_instrument(self):
         if self.connected:
-            ID = self.DPO5000.get_ID()
+            ID = self.scope_object.get_ID()
             if ID is not None:
                 if len(ID):
                     tokens = ID.split(',')
@@ -208,12 +219,12 @@ class Scope_DPO5104(Scope, pvModel):
     def _set_num_av(self, num_av):
         self.pvs['num_av']._val = num_av
         if self.connected:
-            self.DPO5000.set_num_av(num_av)
+            self.scope_object.set_num_av(num_av)
 
     def _get_num_av(self):
 
         if self.connected:
-            num_av = self.DPO5000.get_num_av()
+            num_av = self.scope_object.get_num_av()
         else:
             num_av = self.pvs['num_av']._val
         
@@ -223,11 +234,11 @@ class Scope_DPO5104(Scope, pvModel):
     def _set_acquisition_type(self, acq_type):
         self.pvs['acquisition_type']._val = acq_type
         if self.connected:
-            self.DPO5000.set_aquisition_type(acq_type)    
+            self.scope_object.set_aquisition_type(acq_type)    
 
     def _get_acquisition_type(self):
         if self.connected:
-            t = self.DPO5000.get_aquisition_type()  
+            t = self.scope_object.get_aquisition_type()  
         else:
             t = self.pvs['acquisition_type']._val
         return t
@@ -236,19 +247,19 @@ class Scope_DPO5104(Scope, pvModel):
         self.pvs['channel']._val = channel.upper()
         if self.connected:
             channel = self.pvs['channel']._val
-            self.DPO5000.set_data_source(channel)
+            self.scope_object.set_data_source(channel)
             
 
     def _get_channel(self):
         if self.connected:
-            ch = self.DPO5000.get_data_source()
+            ch = self.scope_object.get_data_source()
         else:
             ch = self.pvs['channel']._val
         return ch
 
     def _get_setup(self):
         if self.connected:
-            setup = self.DPO5000.get_setup_dict(force_load=True)
+            setup = self.scope_object.get_setup_dict(force_load=True)
         else:
             setup = self.pvs['setup']._val
         return setup
@@ -257,15 +268,15 @@ class Scope_DPO5104(Scope, pvModel):
         if self.connected:
             channel = self._get_channel()
             if state:
-                self.DPO5000.select_channel(channel)
+                self.scope_object.select_channel(channel)
             else:
-                self.DPO5000.turn_off_channel(channel)
+                self.scope_object.turn_off_channel(channel)
 
     
     def _get_channel_state(self):
         if self.connected:
             channel = self._get_channel()
-            ans = self.DPO5000.is_channel_selected(channel)
+            ans = self.scope_object.is_channel_selected(channel)
         else:
             ans = self.pvs['channel_state']._val    
         return ans
@@ -273,7 +284,7 @@ class Scope_DPO5104(Scope, pvModel):
     def _get_run_state(self):
         #print('_get_run_state')
         if self.connected:
-            state = self.DPO5000.get_state()
+            state = self.scope_object.get_state()
         else:
             state = self.pvs['run_state']._val  
         return state
@@ -284,22 +295,22 @@ class Scope_DPO5104(Scope, pvModel):
         if self.connected:
             if state:
                 """Start acquisition"""
-                self.DPO5000.start_acq()
+                self.scope_object.start_acq()
             else:
                 """Stop acquisition"""
-                self.DPO5000.stop_acq()
+                self.scope_object.stop_acq()
 
     def _set_vertical_scale(self,scale):
         self.pvs['vertical_scale']._val = scale
         if self.connected:
             channel = self._get_channel()
             #print(scale)
-            self.DPO5000.set_vertical_scale(channel, scale)
+            self.scope_object.set_vertical_scale(channel, scale)
         
     def _get_vertical_scale(self):
         if self.connected:
             channel = self._get_channel()
-            scale = self.DPO5000.get_vertical_scale(channel)
+            scale = self.scope_object.get_vertical_scale(channel)
         else:
             scale = self.pvs['vertical_scale']._val      
         return scale
@@ -362,7 +373,7 @@ class Scope_DPO5104(Scope, pvModel):
             #print('autoscaled')
 
     def _get_waveform(self, wait=True): 
-        #print('get waveform')
+        #print('_get_waveform')
 
         if self.connected:
             #print('connected')
@@ -377,18 +388,18 @@ class Scope_DPO5104(Scope, pvModel):
                 data_stop = self.data_stop
                 ch = self.selected_channel
                 #print('about to read')
-                waveform  = self.DPO5000.read_data_one_channel( data_start=1, 
+                waveform  = self.scope_object.read_data_one_channel( data_start=1, 
                                                                 data_stop=data_stop,
                                                                 x_axis_out=True)
-                
+                #print('finished reading')
                 #end = time.time()
                 # make sure set frame rate isn't exceeded
                 if wait:
                     while time.time()< wait_till:
                         time.sleep(0.005)
-                num_acq = int(self.DPO5000.num_acq)
+                num_acq = int(self.scope_object.num_acq)
                 #elapsed = end - start
-                (dt, micro) = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f').split('.')
+                (dt, micro) = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f').split('.')
                 dt = "%s.%03d" % (dt, int(micro) / 1000)
 
                 waveform_out = {'waveform':waveform,'ch':ch, 'time':dt, 'num_acq':num_acq}

@@ -19,18 +19,18 @@ import traceback
 from um.widgets.UtilityWidgets import ErrorMessageBox
 import time
 
-__version__ = get_versions()['version']
+'''__version__ = get_versions()['version']
 del get_versions
-print(__version__)
+print(__version__)'''
 
-if __version__ == "0+unknown":
-    __version__ = "0.6.1"
+#if __version__ == "0+unknown":
+__version__ = "0.6.3"
 sonicpy_version = __version__[:5]
 
 
 
 
-def excepthook(exc_type, exc_value, traceback_obj):
+'''def excepthook(exc_type, exc_value, traceback_obj):
     """
     Global function to catch unhandled exceptions. This function will result in an error dialog which displays the
     error information.
@@ -68,7 +68,7 @@ def excepthook(exc_type, exc_value, traceback_obj):
         pass
     errorbox = ErrorMessageBox()
     errorbox.setText(str(notice) + str(msg) + str(version_info))
-    errorbox.exec_()
+    errorbox.exec_()'''
 
 
 
@@ -80,7 +80,7 @@ calibrants_path = os.path.join(resources_path, 'calibrants')
 icons_path = os.path.join(resources_path, 'icons')
 data_path = os.path.join(resources_path, 'data')
 style_path = os.path.join(resources_path, 'style')
-title = "SonicPy: Time-of-flight analysis. ver." + __version__ + "  © R. Hrubiak, 2022."
+title = "SonicPy: Time-of-flight analysis. ver." + __version__ + "  © R. Hrubiak, 2024."
 home_path = str(Path.home())
 
 
@@ -94,7 +94,7 @@ def TOF():
         QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
     _platform = platform.system()
     app = QtWidgets.QApplication([])
-    sys.excepthook = excepthook
+    #sys.excepthook = excepthook
     controller = TimeOfFlightController(app = app)
     controller.show_window()
 

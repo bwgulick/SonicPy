@@ -1,8 +1,5 @@
 #!/usr/bin/env python
 
-
-
-import imp
 import os.path, sys
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -13,8 +10,7 @@ import copy
 from pathlib import Path
 from numpy import arange
 from numpy.core.einsumfunc import _parse_possible_contraction
-from sqlalchemy import false
-#from pyrsistent import T
+
 from utilities.utilities import *
 from ua.widgets.UltrasoundAnalysisWidget import UltrasoundAnalysisWidget
 from ua.widgets.OverviewWidget import OverViewWidget, FolderListWidget
@@ -30,6 +26,8 @@ from utilities.HelperModule import increment_filename, increment_filename_extra
 from um.widgets.UtilityWidgets import open_file_dialog, open_files_dialog
 import glob
 from ua.models.EchoesResultsModel import EchoesResultsModel
+from ua.models.MatrixSelectionModel import MatrixSelectionModel
+
 
 ############################################################
 
@@ -42,9 +40,10 @@ class OverViewController(QObject):
     folders_sorted_signal = pyqtSignal(list)
     
 
-    def __init__(self, app = None, results_model=EchoesResultsModel()):
+    def __init__(self, app = None, results_model=EchoesResultsModel(), matrix_model = MatrixSelectionModel()):
         super().__init__()
-        self.model = OverViewModel(results_model)
+        self.model = OverViewModel(results_model, matrix_model)
+ 
 
         if app is not None:
             self.setStyle(app)
@@ -135,11 +134,15 @@ class OverViewController(QObject):
         self.freq_settings_changed_signal.emit({'f_start':f_start,'f_step':f_step, 'f_end':f_end, 'f_selected': display_freq})
 
     def freq_str_ind_to_val(self, str_ind):
-        f_start = self.widget.freq_start.value()
-        f_step = self.widget.freq_step.value()
+        tokens = str_ind.split(',')
+        if len(tokens) >1:
+            val_freq = int(tokens[1].strip())
+        else:
+            f_start = self.widget.freq_start.value()
+            f_step = self.widget.freq_step.value()
 
 
-        val_freq = f_start + int(str_ind) * f_step
+            val_freq = f_start + int(str_ind) * f_step
         return val_freq * 1e6
 
     def emit_cursor(self, pos):
@@ -191,12 +194,16 @@ class OverViewController(QObject):
             # this is the inxed of the plot when user clicks on the waterfall plot
             index = round(y_pos)
             
-            fnames = list(self.model.waterfalls[self.freq].waveforms.keys())
+            fnames_str = list(self.model.waterfalls[self.freq].waveforms.keys())
+            fnames = []
+            for fname_str in fnames_str:
+                fname = fname_str.split('//')[-1]
+                fnames.append(fname)
             if index >=0 and index < len(fnames):
                 
                 fname = fnames[index]
-                
-                self.select_fname(fname)
+                if len(fname):
+                    self.select_fname(fname)
 
     def get_data_by_filename(self, fname):
         data = {}
@@ -222,36 +229,51 @@ class OverViewController(QObject):
         return conds
 
     def select_fname(self, fname, freq= -1.0):
-        temp_fname = copy.copy(self.selected_fname)
-        self.selected_fname = fname
-        data = self.get_data_by_filename(fname)
-        current_frequency = copy.copy(self.freq)
-        current_condition = copy.copy(self.cond)
-        
-        freq = data['freq']
-        cond = data['cond']
-
-        freq_val = self.freq_str_ind_to_val(freq)
-        
-        
-        if freq != current_frequency:
-            ind = list(self.model.fps_Hz.keys()).index(freq)
-            self.set_frequency(ind)
-        if cond != current_condition:
-            self.set_condition(cond)
-        
-        if temp_fname != self.selected_fname:
-            self.re_plot_single_frequency()
-            self.re_plot_single_condition()
-        self.file_selected_signal.emit(data)
+        if fname != self.selected_fname:
+            temp_fname = copy.copy(self.selected_fname)
+            self.selected_fname = fname
+            data = self.get_data_by_filename(fname)
+            if len(data):
+                current_frequency = copy.copy(self.freq)
+                current_condition = copy.copy(self.cond)
                 
+
+                freq = data['freq']
+                cond = data['cond']
+
+                # new matrix selection stuff
+                mode = self.model.settings['mode']
+                if mode == 'discrete_f':
+                    self.model.matrix_model.data_points.set_selected(freq,cond)
+                    selected = self.model.matrix_model.plot_model.get_selected_data_point()
+                    other = self.model.matrix_model.plot_model.get_other_data_points()
+                    #print(selected)
+                    self.widget.matrix_selection_widget.update_view(*other)
+                    self.widget.matrix_selection_widget.update_maximums(*selected)
+                
+                
+                if freq != current_frequency:
+                    ind = list(self.model.fps_Hz.keys()).index(freq)
+                    self.set_frequency(ind)
+                if cond != current_condition:
+                    self.set_condition(cond)
+                
+                if temp_fname != self.selected_fname:
+                    self.re_plot_single_frequency()
+                    self.re_plot_single_condition()
+                self.file_selected_signal.emit(data)
+                        
 
     def single_condition_cursor_y_signal_callback(self, y_pos):
         
         if self.cond in self.model.waterfalls:
             index = round(y_pos)
             
-            fnames = list(self.model.waterfalls[self.cond].waveforms.keys())
+            fnames_str = list(self.model.waterfalls[self.cond].waveforms.keys())
+            fnames = []
+            for fname_str in fnames_str:
+                fname = fname_str.split('//')[-1]
+                fnames.append(fname)
             if index >=0 and index < len(fnames):
                 if fnames[index] in self.model.file_dict:
                     #self.selected_fname = fnames[index]
@@ -375,6 +397,9 @@ class OverViewController(QObject):
         if os.path.isdir(folder):
             
             set_okay = self.model.set_folder_path(folder, mode)
+            show_f_settings = not self.model.auto_freq
+            self.widget.f_settings_set_visible(show_f_settings)
+            
 
             if set_okay : 
                 self.sync_widget_controls_with_model_non_signaling()
@@ -399,6 +424,7 @@ class OverViewController(QObject):
         if len(freqs) >index and len(freqs):
             self.freq = freqs[index]
             self.model.load_multiple_files_by_frequency(self.freq)
+            
             
             self.widget.freq_scroll.blockSignals(True)
             self.widget.freq_scroll.setValue(index)
@@ -426,7 +452,7 @@ class OverViewController(QObject):
             echoes_p = self.model.results_model.echoes_p
             echoes_s = self.model.results_model.echoes_s
 
-            freq = self.freq_str_ind_to_val(self.freq)
+            freq = int(self.freq_str_ind_to_val(self.freq)*1e-6)
 
             for echo_p_name in echoes_p:
                 echoes = echoes_p[echo_p_name]
@@ -455,9 +481,12 @@ class OverViewController(QObject):
             self.widget.single_frequency_waterfall.clear_plot()
             
             self.update_plot_sigle_frequency(waterfall_waveform,selected, echoes_p, echoes_s)
-            f_start = self.widget.freq_start.value()
+
+            display_freq = int(self.freq_str_ind_to_val(self.freq)*1e-6)
+            '''f_start = self.widget.freq_start.value()
             f_step = self.widget.freq_step.value()
-            display_freq = f_start + int(self.freq) * f_step
+
+            display_freq = f_start + int(self.freq) * f_step'''
             self.widget.single_frequency_waterfall.set_name ( str(display_freq) + ' MHz')
             self.widget.single_frequency_waterfall.set_selected_name (selected_name_out)
 

@@ -32,6 +32,7 @@ Control panel
 - :ref:`Sample type <ia_sample_type>`
 - :ref:`Polynomial order <ia_poly_order>`
 - :ref:`Fit threshold <ia_fit_theshold>`
+- :ref:`Measurement mode <ia_measurement_mode>`
 
 .. _ia_open_folder:
 
@@ -135,6 +136,39 @@ Fit threshold
 
 Choose the highest pixel threshold for the fit. The smaller it is, the brightest the pixels considered.
 
+.. _ia_measurement_mode:
+
+Measurement mode
+****************
+
+The measurement mode toggle allows you to switch between two different measurement approaches:
+
+   **Automatic Mode (default)**
+   
+      - Uses automatic edge detection to find the top and bottom edges of your sample
+      - Fits a polynomial curve to each edge
+      - Calculates the distance between edges
+      - Best for samples with clear, well-defined edges
+      - This is the default mode and is useful for foil-wrapped samples
+
+   **Manual Mode**
+   
+      - Allows you to manually select two points on the image to define a measurement line
+      - Click the :guilabel:`Manual` button to activate manual measurement mode
+      - Once activated, click on the image at the top of your sample
+      - Then click at the bottom of your sample
+      - A green line will connect the two points, showing your measurement
+      - The distance in pixels is displayed in the results panel
+      - Click :guilabel:`Clear points` to reset and select new points
+      - This mode is ideal for X-ray images with cylindrical samples where you need to measure from the top surface to the bottom surface
+
+   .. note::
+      For X-ray images of cylindrical metal samples with lighter sections on the top and bottom:
+      1. Load your image file
+      2. Click the :guilabel:`Manual` button to enable manual measurement mode
+      3. Click on the topmost point of the dark cylindrical sample
+      4. Click on the bottommost point of the dark cylindrical sample
+      5. The distance will be automatically calculated and displayed
 
 .. _ia_file_list:
 
