@@ -8,7 +8,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, Qt
 
 import pyqtgraph as pg
 from pyqtgraph import QtCore 
-from um.widgets.CustomWidgets import HorizontalSpacerItem, VerticalSpacerItem, FlatButton, NumberTextField
+from um.widgets.CustomWidgets import DoubleSpinBoxAlignRight, HorizontalSpacerItem, VerticalSpacerItem, FlatButton, NumberTextField
 from ia.widgets.FileViewWidget import FileViewWidget
 
 # Interpret image data as row-major instead of col-major
@@ -85,6 +85,13 @@ class ImageAnalysisWidget(QMainWindow):
         self.crop_btn = QtWidgets.QPushButton("Auto crop")
         self.crop_btn.setCheckable(True)
         self.crop_btn.setChecked(True)
+        self.rot_angle_edit = DoubleSpinBoxAlignRight()
+        self.rot_angle_edit.setMinimum(-180)
+        self.rot_angle_edit.setMaximum(180)
+        self.rot_angle_edit.setValue(0)
+        self.rot_angle_edit.setDecimals(1)
+
+        
         self.compute_btn = QtWidgets.QPushButton("Compute")
         self.compute_btn.setCheckable(True)
         self.fname_lbl = QtWidgets.QLineEdit('')
@@ -113,6 +120,8 @@ class ImageAnalysisWidget(QMainWindow):
         self._menu_bar_layout.setContentsMargins(0,0,0,0)
 
         self._menu_bar_layout.addWidget(self.crop_btn)
+        self._menu_bar_layout.addWidget(QtWidgets.QLabel('     Rotate (deg)'))
+        self._menu_bar_layout.addWidget(self.rot_angle_edit)
 
         self._menu_bar_layout.addWidget(QtWidgets.QLabel('      Sample type'))
 
@@ -192,6 +201,40 @@ class ImageAnalysisWidget(QMainWindow):
         self._menu_bar_layout.addWidget(QtWidgets.QLabel('   Fit threshold'))
         self._menu_bar_layout.addWidget(self.threshold_num)
 
+        # Measurement mode controls
+        self.measurement_mode_widget = QtWidgets.QWidget(self.analysis_widget)
+        self._measurement_mode_layout = QtWidgets.QHBoxLayout(self.measurement_mode_widget)
+        self._measurement_mode_layout.setContentsMargins(0, 0, 0, 0)
+        self._measurement_mode_layout.setSpacing(3)
+        
+        self.mode_auto_btn = QtWidgets.QPushButton('Auto')
+        self.mode_manual_btn = QtWidgets.QPushButton('Manual')
+        self.mode_auto_btn.setObjectName('mode_auto_btn')
+        self.mode_manual_btn.setObjectName('mode_manual_btn')
+        self.mode_auto_btn.setCheckable(True)
+        self.mode_manual_btn.setCheckable(True)
+        self.measurement_mode_group = QtWidgets.QButtonGroup(self.measurement_mode_widget)
+        self.measurement_mode_group.addButton(self.mode_auto_btn)
+        self.measurement_mode_group.addButton(self.mode_manual_btn)
+        self.mode_auto_btn.setChecked(True)
+        self.mode_auto_btn.setMaximumWidth(58)
+        self.mode_manual_btn.setMaximumWidth(58)
+        
+        self._measurement_mode_layout.addWidget(QtWidgets.QLabel('   Mode'))
+        self._measurement_mode_layout.addWidget(self.mode_auto_btn)
+        self._measurement_mode_layout.addWidget(self.mode_manual_btn)
+        
+        self.clear_points_btn = QtWidgets.QPushButton('Clear points')
+        self.clear_points_btn.setMaximumWidth(92)
+        self._measurement_mode_layout.addWidget(self.clear_points_btn)
+        
+        self.manual_mode_status = QtWidgets.QLabel('Auto')
+        self.manual_mode_status.setStyleSheet("QLabel { color: black; font-weight: bold; }")
+        self._measurement_mode_layout.addWidget(self.manual_mode_status)
+        
+        self.measurement_mode_widget.setLayout(self._measurement_mode_layout)
+        self._menu_bar_layout.addWidget(self.measurement_mode_widget)
+
         self._menu_bar_layout.addSpacerItem(HorizontalSpacerItem())
 
         
@@ -248,6 +291,12 @@ class ImageAnalysisWidget(QMainWindow):
       
         self.abs_plt = self.plots['absorbance'].plot([], pen = pg.mkPen((255,0,0, 180),width=4,style=pg.QtCore.Qt.DotLine),connect='finite')
   
+        # Manual measurement visualization (on the real source image, where the
+        # user can see the sample and click its top/bottom endpoints).
+        self.manual_points_plot = self.plots['src'].plot([], pen=None, symbol='o', symbolSize=12, symbolPen=pg.mkPen((0, 255, 0), width=2), symbolBrush=pg.mkBrush(0, 255, 0, 120))
+        self.manual_line_plot = self.plots['src'].plot([], pen=pg.mkPen((0, 255, 0), width=2, style=pg.QtCore.Qt.SolidLine))
+        self.manual_points_plot.setZValue(20)
+        self.manual_line_plot.setZValue(20)
 
         self._layout.addWidget(self.plot_grid)
         

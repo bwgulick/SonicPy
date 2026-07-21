@@ -14,10 +14,7 @@ import numpy as np
 from functools import partial
 
 from ua.widgets.WaterfallWidget import WaterfallWidget
-
-
-
-        
+from ua.widgets.MatrixSelectionWidget import MatrixSelectionWidget
 
 class FolderListWidget(QWidget):
     
@@ -128,14 +125,28 @@ class OverViewWidget(QWidget):
         self.spectrum = None
 
 
-        self.setWindowTitle('Time-of-flight analysis')
+        #self.setWindowTitle('Time-of-flight analysis')
 
         #self.resize(800, 800)
-        
+        self.f_settings_visible = False
         self.make_widget()
 
-        self.freq_btns_list = []
-        self.cond_btns_list = []
+        '''self.freq_btns_list = []
+        self.cond_btns_list = []'''
+        
+        
+
+    def f_settings_set_visible(self, state):
+        if state:
+            if not self.f_settings_visible:
+                self._buttons_layout_top.addWidget(self._f_settings_widget)
+                self._f_settings_widget.show()
+                self.f_settings_visible = True
+        else:
+            if self.f_settings_visible:
+                self._buttons_layout_top.removeWidget(self._f_settings_widget)
+                self._f_settings_widget.hide()
+                self.f_settings_visible = False
 
 
     def make_widget(self):
@@ -147,9 +158,15 @@ class OverViewWidget(QWidget):
         self.label.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter)
         self.label.setStyleSheet('''font-size: 18pt;''')
         self._layout.addWidget(self.label)
+
+        self.splitter_vertical = QtWidgets.QSplitter(Qt.Vertical)
+
+        self.widget_top = QtWidgets.QWidget(self.splitter_vertical)
+        self._layout_top = QtWidgets.QVBoxLayout(self.widget_top)
+        self._layout_top.setContentsMargins(0, 0, 0, 0)
         
-        self.buttons_widget_top = QtWidgets.QWidget()
-        self._buttons_layout_top = QtWidgets.QHBoxLayout()
+        self.buttons_widget_top = QtWidgets.QWidget(self.widget_top)
+        self._buttons_layout_top = QtWidgets.QHBoxLayout(self.buttons_widget_top)
         self._buttons_layout_top.setContentsMargins(0, 0, 0, 0)
         
         
@@ -186,16 +203,23 @@ class OverViewWidget(QWidget):
         self.freq_step.setSingleStep(0.5)
         self.freq_step.setValue(2)
 
-        self._buttons_layout_top.addWidget(QtWidgets.QLabel('𝑓 start'))
-        self._buttons_layout_top.addWidget(self.freq_start)
-        self._buttons_layout_top.addWidget(QtWidgets.QLabel('𝑓 step'))
-        self._buttons_layout_top.addWidget(self.freq_step)
+        self._f_settings_widget = QtWidgets.QWidget()
+        self._f_settings_layout = QtWidgets.QHBoxLayout(self._f_settings_widget)
+        self._f_settings_layout.setContentsMargins(0,0,0,0)
+        self._f_settings_layout.addWidget(QtWidgets.QLabel('𝑓 start'))
+        self._f_settings_layout.addWidget(self.freq_start)
+        self._f_settings_layout.addWidget(QtWidgets.QLabel('𝑓 step'))
+        self._f_settings_layout.addWidget(self.freq_step)
+
+        #self.f_settings_set_visible(True)
 
         self.buttons_widget_top.setLayout(self._buttons_layout_top)
-        self._layout.addWidget(self.buttons_widget_top)
+        self._layout_top.addWidget(self.buttons_widget_top)
 
 
-        self.plots_tab_widget= QtWidgets.QTabWidget(self)
+        
+
+        self.plots_tab_widget= QtWidgets.QTabWidget(self.widget_top)
         self.plots_tab_widget.setObjectName("plots_tab_widget")
 
         self.single_frequency_widget = QtWidgets.QWidget(self.plots_tab_widget)
@@ -219,18 +243,35 @@ class OverViewWidget(QWidget):
 
         self.plots_tab_widget.addTab(self.single_condition_widget, 'P-T Step')
 
-        self._layout.addWidget(self.plots_tab_widget)
+      
+        self._layout_top.addWidget(self.plots_tab_widget)
+
+        
+
+        self.splitter_vertical.addWidget(self.widget_top)
+
+        self.matrix_selection_widget = MatrixSelectionWidget()
+        self.splitter_vertical.addWidget(self.matrix_selection_widget)
+
+        self.splitter_vertical.setSizes([600,0])
+
+        self._layout.addWidget(self.splitter_vertical)
+
+
 
         self.make_bottom_btn_widgets()
-        self.make_bottom_combo_widgets()
+        self.make_bottom_scroll_widgets()
+
+        
 
         self.setLayout(self._layout)
 
     def clear_widget(self):
         self.single_frequency_waterfall.clear_plot()
         self.single_condition_waterfall.clear_plot()
+        self.f_settings_set_visible(False)
 
-    def make_bottom_combo_widgets(self):
+    def make_bottom_scroll_widgets(self):
         
 
         self.freq_scroll = QtWidgets.QScrollBar(orientation=Qt.Horizontal, parent=self.freqs_widget)

@@ -240,9 +240,11 @@ class CustomViewBox(pg.ViewBox):
             y = mousePoint.y()
             self.cursorPoint=x
             self.cursorPoint_y = y
+            print(x)
+            print(y)
             self.plotMouseCursorSignal.emit(x)   
             self.cursor_y_signal.emit(y) 
-        ev.accept()
+        #ev.accept()
             
 
 class PltWidget(pg.PlotWidget):
@@ -251,8 +253,8 @@ class PltWidget(pg.PlotWidget):
     Subclass of PlotWidget
     """
     plotMouseMoveSignal = pyqtSignal(float)  
-    range_changed = QtCore.Signal(list)
-    auto_range_status_changed = QtCore.Signal(bool)
+    range_changed = QtCore.pyqtSignal(list)
+    auto_range_status_changed = QtCore.pyqtSignal(bool)
 
     def __init__(self, parent=None, colors = None):
         """

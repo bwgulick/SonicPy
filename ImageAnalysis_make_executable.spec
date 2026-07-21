@@ -4,8 +4,18 @@ from sys import platform as _platform
 import os
 from distutils.sysconfig import get_python_lib
 import sys
+from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs, collect_all
 
 sys.setrecursionlimit(5000)
+
+# tifffile/imagecodecs read the 16-bit / compressed TIFFs that OpenCV can't.
+# imagecodecs loads compiled codec extension modules lazily, so pull them all in.
+_imagecodecs_hidden = collect_submodules('imagecodecs')
+_imagecodecs_bins = collect_dynamic_libs('imagecodecs')
+
+# Bundle OpenCV completely (its __init__.py / config.py bootstrap + all DLLs),
+# otherwise the frozen cv2 is a partial module missing functions like GaussianBlur.
+_cv2_datas, _cv2_bins, _cv2_hidden = collect_all('cv2')
 
 #import cv2
 #cvlibs = os.path.join(os.path.dirname(cv2.__file__), '.libs')
@@ -60,10 +70,11 @@ print('start Analysis')
 
 a = Analysis(['ImageAnalysis.py'],
              pathex=[folder],
-             binaries=extra_binaries,
-             datas=extra_datas,
-             hiddenimports=['cv2', "ia", 'setuptools'
-                            ],
+             binaries=extra_binaries + _imagecodecs_bins + _cv2_bins,
+             datas=extra_datas + _cv2_datas,
+             hiddenimports=['cv2', "ia", 'setuptools', 'compress_json', 'natsort',
+                            'tifffile', 'imagecodecs', 'PIL', 'PIL.Image',
+                            'PIL.TiffImagePlugin'] + _imagecodecs_hidden + _cv2_hidden,
              hookspath=[],
              runtime_hooks=[],
              excludes=excl,
@@ -72,7 +83,7 @@ a = Analysis(['ImageAnalysis.py'],
              cipher=block_cipher,
              noarchive=False)
 
-# remove packages which are not needed by Dioptas
+# remove packages which are not needed by ImageAnalysis
 a.binaries = [x for x in a.binaries if not x[0].startswith("matplotlib")]
 a.binaries = [x for x in a.binaries if not x[0].startswith("zmq")]
 a.binaries = [x for x in a.binaries if not x[0].startswith("IPython")]
@@ -107,8 +118,10 @@ exclude_datas = [
    "qt5_plugins"
 ]
 
+_keep_prefixes = ('cv2', 'imagecodecs', 'tifffile')
 for exclude_data in exclude_datas:
-    a.datas = [x for x in a.datas if exclude_data not in x[0]]
+    a.datas = [x for x in a.datas
+               if exclude_data not in x[0] or x[0].startswith(_keep_prefixes)]
 
 
 

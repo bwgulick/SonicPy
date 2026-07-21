@@ -5,7 +5,7 @@ import copy
 from PyQt5.QtCore import QThread, pyqtSignal
 import time
 from um.models.ScopeModel import Scope
-from um.models.DPO5104 import Scope_DPO5104
+
 import json
 
 
@@ -14,7 +14,9 @@ from functools import partial
 from um.widgets.UtilityWidgets import save_file_dialog, open_file_dialog, open_files_dialog
 from um.controllers.pv_controller import pvController
 from utilities.utilities import *
-from um.controllers.envController import envController
+#from um.controllers.envController import envController
+
+
 
 class ScopeController(pvController):
     callbackSignal = pyqtSignal(dict)  
@@ -23,9 +25,17 @@ class ScopeController(pvController):
     #dataBGUpdatedSignal = pyqtSignal(dict)
     #runStateSignal = pyqtSignal(bool)
 
-    def __init__(self, parent, isMain = False, offline = False):
-        visa_hostname = '143'
-        model = Scope_DPO5104(parent, visa_hostname=visa_hostname, offline = offline)
+
+    def __init__(self, parent, isMain = False, offline = False, scope_model='DPO', visa_hostname = '169'):
+
+        if scope_model == 'DPO':
+            from um.models.DPO5104 import Scope_DPO5104
+            model = Scope_DPO5104(parent, visa_hostname=visa_hostname, offline = offline)
+        elif scope_model == 'MSO':
+            from um.models.MSO54 import Scope_MSO54
+            model = Scope_MSO54(parent, visa_hostname=visa_hostname, offline = offline)
+        
+        
         super().__init__(parent, model, isMain) 
         
         self.panel_items =[ 'instrument',

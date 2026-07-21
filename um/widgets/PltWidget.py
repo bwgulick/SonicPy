@@ -23,7 +23,7 @@ class SimpleDisplayWidget(QtWidgets.QWidget):
     cursor_changed_singal = QtCore.pyqtSignal(float)
     cursor_y_signal = QtCore.pyqtSignal(float)
     
-    def __init__(self, fig_params):
+    def __init__(self, fig_params, update_cursor_on = True):
         super().__init__()
         self.cursor_pos = 0.0
         self._layout = QtWidgets.QVBoxLayout(self)
@@ -52,6 +52,8 @@ class SimpleDisplayWidget(QtWidgets.QWidget):
         self.button_widget.setLayout(self._button_widget_layout)
         self._layout.addWidget(self.button_widget)
         self.setLayout(self._layout)
+        self.update_diff_on = True
+        self.update_cursor_on = update_cursor_on
         self.create_connections()
         
 
@@ -63,7 +65,8 @@ class SimpleDisplayWidget(QtWidgets.QWidget):
 
     def create_connections(self):
         self.fig.fast_cursor.connect(self.update_fast_cursor)
-        self.fig.cursor.connect(self.update_cursor)
+        if self.update_cursor_on:
+            self.fig.cursor.connect(self.update_cursor)
         self.fig.cursor_y_signal.connect(self.update_cursor_y)
    
 
@@ -77,23 +80,27 @@ class SimpleDisplayWidget(QtWidgets.QWidget):
         self.cursor_fast_lbl.setText(c)
         self.fig.set_fast_cursor(pos)
         self.fast_cursor_changed_singal.emit(pos)
-        self.update_diff()
+        if self.update_diff_on:
+            self.update_diff()
 
     def update_cursor(self, pos):
+        
         c = "<span style='color: #00CC00'>%0.3e</span>"  % (pos)
         
         self.cursor_lbl.setText(c)
         self.cursor_pos = pos
         self.fig.set_cursor(pos)
+        
+        if self.update_diff_on:
+            self.update_diff()
         self.cursor_changed_singal.emit(pos)
-        self.update_diff()
-    
     
 
     def update_cursor_y(self, pos):
-        '''c = "<span style='color: #00CC00'>%0.3e</span>"  % (pos)
-        self.cursor_lbl.setText(c)
-        self.fig.set_cursor(pos)'''
+        if self.update_cursor_on:
+            '''c = "<span style='color: #00CC00'>%0.3e</span>"  % (pos)
+            self.cursor_lbl.setText(c)
+            self.fig.set_cursor(pos)'''
         self.cursor_y_signal.emit(pos)
         
 
@@ -231,7 +238,7 @@ class CustomViewBox(pg.ViewBox):
         self.vLine = myVLine(movable=False, pen=pg.mkPen(color=(0, 255, 0), width=2 , style=QtCore.Qt.DashLine))
         
         #self.vLine.sigPositionChanged.connect(self.cursor_dragged)
-        self.vLineFast = myVLine(movable=False,pen=mkPen({'color': '808080', 'width': 2, 'style':QtCore.Qt.DashLine}))
+        self.vLineFast = myVLine(movable=False,pen=mkPen({'color': '#808080', 'width': 2, 'style':QtCore.Qt.DashLine}))
         self.cursors = [self.vLine, self.vLineFast]
         self.setMouseMode(self.RectMode)
         self.addItem(self.vLine, ignoreBounds=True)
@@ -263,14 +270,19 @@ class CustomViewBox(pg.ViewBox):
             
         elif ev.button() == QtCore.Qt.LeftButton: 
             pos = ev.pos()  ## using signal proxy turns original arguments into a tuple
-            mousePoint = self.mapToView(pos)
-            x = mousePoint.x()
-            y = mousePoint.y()
-            self.cursorPoint=x
-            self.cursorPoint_y = y
-            self.plotMouseCursorSignal.emit(x)   
-            self.cursor_y_signal.emit(y) 
-        ev.accept()
+            if pos[0] > 0 and pos[1] > 0:
+
+                #print('pos ' + str(pos))
+                mousePoint = self.mapToView(pos)
+                x = mousePoint.x()
+                y = mousePoint.y()
+                #print(x)
+                #print(y)
+                self.cursorPoint=x
+                self.cursorPoint_y = y
+                self.plotMouseCursorSignal.emit(x)   
+                self.cursor_y_signal.emit(y) 
+        #ev.accept()
 
     def wheelEvent(self, ev, axis=None):
 
@@ -292,8 +304,8 @@ class PltWidget(pg.PlotWidget):
     Subclass of PlotWidget
     """
     plotMouseMoveSignal = pyqtSignal(float)  
-    range_changed = QtCore.Signal(list)
-    auto_range_status_changed = QtCore.Signal(bool)
+    range_changed = QtCore.pyqtSignal(list)
+    auto_range_status_changed = QtCore.pyqtSignal(bool)
 
     def __init__(self, parent=None, colors = None):
         """
@@ -495,24 +507,25 @@ class PltWidget(pg.PlotWidget):
         self.setLabel('bottom', xLabel) 
 
     def plotData(self, xAxis,data,roiHorz=[],roiData=[],echoPHorz=[],echoPData=[],echoSHorz=[],echoSData=[], xLabel='', dataLabel=''):
-        if len(xAxis)==len(data):
-            self.xAxis = xAxis
-            self.yData = data
-            if self.plotForeground == None:
-                self.create_plots(xAxis,data,roiHorz,roiData, xLabel)
+        if len(xAxis) : 
+            if len(xAxis)==len(data):
+                self.xAxis = xAxis
+                self.yData = data
+                if self.plotForeground == None:
+                    self.create_plots(xAxis,data,roiHorz,roiData, xLabel)
+                else:
+                    self.plotForeground.setData(xAxis, data) 
+                    self.plotRoi.setData(roiHorz, roiData) 
+                    self.plotPEcho.setData(echoPHorz,echoPData)
+                    self.plotSEcho.setData(echoSHorz,echoSData)
+                # if nonzero ROI data, show ROI legend on plot
+                if len(roiHorz) > 0: roiLabel = 'ROIs'
+                else:   roiLabel = ''
+                self.legend.renameItem(0, dataLabel)
+                self.legend.renameItem(1, roiLabel)
+                self.setLabel('bottom', xLabel)     
             else:
-                self.plotForeground.setData(xAxis, data) 
-                self.plotRoi.setData(roiHorz, roiData) 
-                self.plotPEcho.setData(echoPHorz,echoPData)
-                self.plotSEcho.setData(echoSHorz,echoSData)
-            # if nonzero ROI data, show ROI legend on plot
-            if len(roiHorz) > 0: roiLabel = 'ROIs'
-            else:   roiLabel = ''
-            self.legend.renameItem(0, dataLabel)
-            self.legend.renameItem(1, roiLabel)
-            self.setLabel('bottom', xLabel)     
-        else:
-            print('x and y arrays not the same length')
+                print('x and y arrays not the same length')
 
     def lin_reg_mode(self, mode,**kwargs):
         if mode == 'Add':

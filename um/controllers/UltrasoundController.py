@@ -42,10 +42,12 @@ from .. import style_path
 from um.models.pvServer import pvServer
 from um.widgets.panel import Panel
 
+
+
 ############################################################
 
 class UltrasoundController(QObject):
-    def __init__(self, app, _platform, theme, offline = False):
+    def __init__(self, app, _platform, theme, scope_offline = True, scope_model='DPO', scope_hostname='169', afg_offline=True, afg_model='AFG', afg_hostname='202'):
         super().__init__()
     
         self.scope_file_options_file='scope_file_settings.json'
@@ -64,12 +66,12 @@ class UltrasoundController(QObject):
         
         self.arb_controller = ArbController(self)
         self.arb_filter_controller = ArbFilterController(self)
-        self.afg_controller = AFGController(self, arb_controller = self.arb_controller, arb_filter_controller= self.arb_filter_controller,  offline = offline)
+        self.afg_controller = AFGController(self, arb_controller = self.arb_controller, arb_filter_controller= self.arb_filter_controller,  offline = afg_offline, visa_hostname = afg_hostname)
         
         self.save_data_controller = SaveDataController(self)
         self.scan_pv = self.arb_controller.scan_pv
         
-        self.scope_controller = ScopeController(self, offline = offline)
+        self.scope_controller = ScopeController(self, offline = scope_offline, scope_model=scope_model, visa_hostname = scope_hostname)
 
         scope_waveform_widget = self.display_window.scope_widget
         self.scope_plot_controller = ScopePlotController(scope_controller = self.scope_controller,
@@ -77,7 +79,7 @@ class UltrasoundController(QObject):
 
         afg_waveform_widget = self.display_window.afg_widget
         self.afg_plot_controller = AFGPlotController(afg_controller = self.afg_controller,
-                                                afg_waveform_widget= afg_waveform_widget)
+                                                afg_waveform_widget= afg_waveform_widget, offline = afg_offline)
                                                 
         self.overlay_controller = OverlayController(self, self.scope_plot_controller)
         
@@ -278,6 +280,14 @@ class UltrasoundController(QObject):
         print(state)
         
         pass'''
+    
+    def relative_path(self, relative_path):
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
 
     def setStyle(self, Style):
         #print('style:  ' + str(Style))
@@ -285,6 +295,13 @@ class UltrasoundController(QObject):
             WStyle = 'plastique'
             file = open(os.path.join(self.style_path, "stylesheet.qss"))
             stylesheet = file.read()
+
+            down_arrow_url = self.relative_path("um/resources/style/angle-down.png").replace("\\", "/")
+            up_arrow_url = self.relative_path("um/resources/style/angle-up.png").replace("\\", "/")
+
+            stylesheet = stylesheet.replace("down_arrow_url", down_arrow_url)
+            stylesheet = stylesheet.replace("up_arrow_url", up_arrow_url)
+
             self.app.setStyleSheet(stylesheet)
             file.close()
             self.app.setStyle(WStyle)

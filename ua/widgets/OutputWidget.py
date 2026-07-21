@@ -1,4 +1,3 @@
-import imp
 import os, os.path, sys, platform, copy
 from functools import partial
 from time import sleep
@@ -54,10 +53,10 @@ class OutputWidget(QtWidgets.QWidget):
         header_view = QtWidgets.QHeaderView(QtCore.Qt.Horizontal, tw)
         tw.setHorizontalHeader(header_view)
         tw.setHorizontalHeaderLabels(header_lbls)
-        header_view.setResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        header_view.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         '''for col in range(len(header_lbls)-1):
-            header_view.setResizeMode(col , QtWidgets.QHeaderView.ResizeToContents)'''
-        header_view.setResizeMode(len(header_lbls)-1, QtWidgets.QHeaderView.Stretch)
+            header_view.setSectionResizeMode(col , QtWidgets.QHeaderView.ResizeToContents)'''
+        header_view.setSectionResizeMode(len(header_lbls)-1, QtWidgets.QHeaderView.Stretch)
     
         tw.setItemDelegate(NoRectDelegate())
 

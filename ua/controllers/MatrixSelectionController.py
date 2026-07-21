@@ -28,7 +28,7 @@ from ua.models.EchoesResultsModel import EchoesResultsModel
 
 ############################################################
 
-class ArrowPlotController(QObject):
+class MatrixSelectionController(QObject):
 
     arrow_plot_freq_cursor_changed_signal = pyqtSignal(dict)
     arrow_plot_del_clicked_signal = pyqtSignal(dict)
