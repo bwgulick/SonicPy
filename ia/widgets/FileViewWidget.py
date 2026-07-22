@@ -53,7 +53,8 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
             if not result.get('mean'):
                 continue
 
-            line = [fname,'','','','',]
+            # Export just the file name, not the full (long) path.
+            line = [os.path.basename(fname),'','','','',]
             for col in cols:
 
                 if cols[col] in result:
