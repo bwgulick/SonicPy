@@ -45,18 +45,20 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
         lines.append(first_line)
        
         for fname in self.fnames:
-            
-            mean = ''
-            stddev = ''
-            edge1 = ''
-            edge2 = ''
+
+            result = self.fnames [fname] ['result']
+
+            # Only export files that actually have a measured distance;
+            # skip files that were never analyzed (empty result).
+            if not result.get('mean'):
+                continue
+
             line = [fname,'','','','',]
             for col in cols:
-            
-                if cols[col] in self.fnames [fname] ['result']:
-                    line[col-3] = self.fnames [fname] ['result'][cols[col]]
-           
-            #line = [fname, mean, stddev, edge1, edge2]
+
+                if cols[col] in result:
+                    line[col-3] = result[cols[col]]
+
             lines.append(line)
         return lines
 
