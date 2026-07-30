@@ -2,6 +2,7 @@
 
 import os
 import time
+import copy
 from PyQt5.QtCore import QObject, pyqtSignal
 from ua.models.MultipleFrequenciesModel import MultipleFrequenciesModel
 from ua.models.EchoesResultsModel import EchoesResultsModel
@@ -194,7 +195,27 @@ class MultipleFrequencyController(QObject):
 
     def restore_pairs(self, cond):
         echoes_def, pairs, echo_names = self.echoes_results_model.get_pairs_def(cond)
+        has_def = bool(echoes_def and (echoes_def.get('P') or echoes_def.get('S')))
+        if has_def:
+            # This condition already has its own saved echo windows / pairs.
+            self.correlation_controller.set_pairs_state(echoes_def, pairs, echo_names)
+            return
+        # Fresh condition (never visited): carry over the current echo windows,
+        # names and pair definitions so the selections persist across all
+        # samples and stay in the same position. Copy the geometry + names +
+        # pair structure but blank the per-condition tau results so each
+        # pressure is recomputed on its own data.
+        echoes_def, pairs, echo_names = self.correlation_controller.get_pairs_state()
+        echoes_def = copy.deepcopy(echoes_def)
+        echo_names = copy.deepcopy(echo_names)
+        pairs = copy.deepcopy(pairs)
+        for wt in ('P', 'S'):
+            for p in pairs.get(wt, []):
+                p['tau'] = None
+                p['tau_std'] = None
         self.correlation_controller.set_pairs_state(echoes_def, pairs, echo_names)
+        # Snapshot the carried-over layout to this condition so it is remembered.
+        self.echoes_results_model.save_pairs_def(cond, echoes_def, pairs, echo_names)
 
     def do_all_broadband_pulse(self, *args, **kwargs):
         f_start = args[0]
@@ -258,6 +279,11 @@ class MultipleFrequencyController(QObject):
         cond = data['cond']
 
         if self.model.cond != cond:
+            # Persist the condition we are leaving first, so its echo windows,
+            # names, pairs and tau are not lost when we switch away.
+            if self.model.cond:
+                self.persist_pairs()
+
             # this code checks what frequencies are available for the selected condition and updates the model
 
             f_start = self.overview_controller.widget.freq_start.value()
