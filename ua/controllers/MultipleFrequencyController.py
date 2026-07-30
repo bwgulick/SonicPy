@@ -10,6 +10,7 @@ from ua.widgets.MultipleFrequenciesWidget import MultipleFrequenciesWidget
 from ua.controllers.OverViewController import OverViewController
 from ua.controllers.UltrasoundAnalysisController import UltrasoundAnalysisController
 from ua.controllers.ArrowPlotController import ArrowPlotController
+from ua.models.ArrowPlotModel import ArrowPlot
 
 from PyQt5 import QtWidgets, QtCore
 
@@ -129,6 +130,72 @@ class MultipleFrequencyController(QObject):
         
             
 
+    def compute_pair_tau(self, bounds, wave_type):
+        '''Run the full multi-frequency sweep for one echo pair (given by its
+        two echo windows in `bounds`) and return the extrapolated, cycle-skip
+        resolved travel time as {opt: {'time_delay','time_delay_std'}} in us,
+        or None. Nothing is persisted to the echoes model; a transient in-memory
+        ArrowPlot is used so the single-pair pipeline is untouched.'''
+        files = self.model.files
+        if not len(files):
+            return None
+
+        bounds_ok = bounds[0][0] > 0 and bounds[0][1] > 0 and bounds[1][0] > 0 and bounds[1][1] > 0
+        if not bounds_ok:
+            return None
+
+        cc = self.correlation_controller
+        # preserve the currently displayed waveform/state
+        saved = (cc.model.t, cc.model.spectrum, cc.fname, cc.model.wave_type)
+        cc.model.wave_type = wave_type
+
+        min_f = self.widget.frequency_sweep_widget.f_min_bx.value()
+        max_f = self.widget.frequency_sweep_widget.f_max_bx.value()
+
+        arrow_plot = ArrowPlot(self.echoes_results_model)
+        try:
+            for f in files:
+                if f < min_f or f > max_f:
+                    continue
+                fname = files[f]
+                data = self.overview_controller.get_data_by_filename(fname)
+                if not len(data):
+                    continue
+                cc.update_data_by_dict_silent(data)
+                freq = f * 1e6
+                cc.calculate_data_silent(freq, bounds)
+                out = cc.model.save_result(fname)
+                if out['ok']:
+                    arrow_plot.add_freq(out['data'])
+
+            result = {}
+            for opt in ('max', 'min'):
+                try:
+                    if len(arrow_plot.optima) > 2:
+                        arrow_plot.auto_sort_optima(opt)
+                        arrow_plot.calculate_lines(opt)
+                        if opt in arrow_plot.result:
+                            result[opt] = arrow_plot.result[opt]
+                except Exception:
+                    pass
+        finally:
+            # restore displayed state
+            cc.model.t, cc.model.spectrum, cc.fname, cc.model.wave_type = saved
+
+        return result if len(result) else None
+
+    def persist_pairs(self):
+        '''Snapshot the current echo windows + pairs into the project file for
+        the currently selected condition.'''
+        cond = self.model.cond
+        if cond:
+            echoes_def, pairs, echo_names = self.correlation_controller.get_pairs_state()
+            self.echoes_results_model.save_pairs_def(cond, echoes_def, pairs, echo_names)
+
+    def restore_pairs(self, cond):
+        echoes_def, pairs, echo_names = self.echoes_results_model.get_pairs_def(cond)
+        self.correlation_controller.set_pairs_state(echoes_def, pairs, echo_names)
+
     def do_all_broadband_pulse(self, *args, **kwargs):
         f_start = args[0]
         f_end= args[1]
@@ -221,7 +288,12 @@ class MultipleFrequencyController(QObject):
 
             self.set_f_start_end(min_f, max_f)
 
-        
+            # restore any persisted echo windows + pairs for the new condition
+            # (before recover_selected_regions, which overrides echoes 1 & 2
+            # from the per-file saved bounds)
+            self.restore_pairs(cond)
+
+
         self.recover_selected_regions(fname, freq_val_base)
         self.update_analysis(data)
         self.update_arrow_plot(data)

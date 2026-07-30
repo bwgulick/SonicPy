@@ -28,26 +28,11 @@ class TimeOfFlightWidget(QMainWindow):
         self.output_widget = output_widget
         self.arrow_plot_widget = arrow_plot_widget
 
-        self.middle_widget = QtWidgets.QWidget()
-        self._middle_widget_layout = QtWidgets.QVBoxLayout()
-        self._middle_widget_layout.setContentsMargins(5,5,5,5)
-        self._middle_widget_layout.addWidget(self.analysis_widget)
-        self._middle_widget_layout.addWidget(self.multiple_frequencies_widget)
-        self.middle_widget.setLayout(self._middle_widget_layout)
-
-        self.right_widget = QtWidgets.QSplitter(Qt.Vertical)
-        self.right_widget.addWidget(self.arrow_plot_widget)
-        self.right_widget.addWidget(self.output_widget)
-   
-        
-
         self.setWindowTitle(title)
 
         self.resize(1440, 790)
-        
-        self.make_widget()
 
-        self.setCentralWidget(self.my_widget)
+        self.make_widget()
 
         self.create_menu()
         self.style_widgets()
@@ -120,8 +105,14 @@ class TimeOfFlightWidget(QMainWindow):
         self.export_correlation_plot_act = QtWidgets.QAction('&Correlation', self)        
         self.export_correlation_mnu.addAction(self.export_correlation_plot_act)
 
-        self.export_arrow_plot_act = QtWidgets.QAction('&Inverse 𝑓', self)        
+        self.export_arrow_plot_act = QtWidgets.QAction('&Inverse 𝑓', self)
         self.export_menu_mnu.addAction(self.export_arrow_plot_act)
+
+        # View menu: toggle visibility / re-docking of each panel
+        view_menu = QtWidgets.QMenu("&View", self)
+        menuBar.addMenu(view_menu)
+        for dock in getattr(self, 'docks', []):
+            view_menu.addAction(dock.toggleViewAction())
 
     def keyPressEvent(self, e):
         
@@ -150,56 +141,63 @@ class TimeOfFlightWidget(QMainWindow):
         self.panelClosedSignal.emit()
 
     def make_widget(self):
-        self.my_widget = QtWidgets.QWidget()
-        self._layout = QtWidgets.QVBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self.detail_widget = QtWidgets.QWidget()
-        self._detail_layout = QtWidgets.QHBoxLayout()
-        self._detail_layout.setContentsMargins(0, 0, 0, 0)
-        self.buttons_widget_top = QtWidgets.QWidget()
-        self._buttons_layout_top = QtWidgets.QHBoxLayout()
-        self._buttons_layout_top.setContentsMargins(0, 0, 0, 0)
-        self.buttons_widget_bottom = QtWidgets.QWidget()
-        
-        self._buttons_layout_bottom = QtWidgets.QHBoxLayout()
-        self._buttons_layout_bottom.setContentsMargins(0, 0, 0, 0)
-        
-        
+        # Every panel lives in its own dock so the user can drag, float, tab, or
+        # hide it freely.  A hidden zero-content central widget lets the docks
+        # fill the whole window.
+        self.setDockNestingEnabled(True)
+        dummy_central = QtWidgets.QWidget()
+        dummy_central.setMaximumSize(0, 0)
+        self.setCentralWidget(dummy_central)
+        self.centralWidget().hide()
 
-        
-        self._buttons_layout_top.addSpacerItem(HorizontalSpacerItem())
-        
-        self.buttons_widget_top.setLayout(self._buttons_layout_top)
-        #self._layout.addWidget(self.buttons_widget_top)
-        
-        
-        self.center_widget = QtWidgets.QWidget(self)
-        self._center_widget_layout = QtWidgets.QHBoxLayout(self.center_widget)
+        self.overview_dock = self._make_dock('Overview', self.overview_widget)
+        self.analysis_dock = self._make_dock('Echo Selection', self.analysis_widget)
+        self.multiple_frequencies_dock = self._make_dock('Multiple frequencies', self.multiple_frequencies_widget)
+        self.arrow_plot_dock = self._make_dock('Inverse 𝑓', self.arrow_plot_widget)
+        self.output_dock = self._make_dock('Results output', self.output_widget)
 
-        
+        # The Echoes and Echo pairs tables live inside the Echo Selection widget
+        # but the user wants to move/resize them independently, so pull them out
+        # into their own docks. Reparenting into a QDockWidget removes them from
+        # the analysis widget's layout; all controller references (echoes_tw,
+        # pairs_tw, combos, buttons) stay valid because the widgets are unchanged.
+        self.echoes_dock = self._make_dock('Echoes', self.analysis_widget.echoes_group)
+        self.pairs_dock = self._make_dock('Echo pairs', self.analysis_widget.pairs_group)
 
-        self.splitter_horizontal = QtWidgets.QSplitter(Qt.Horizontal)
-        self.splitter_horizontal.addWidget(self.overview_widget)
-        self.splitter_horizontal.addWidget(self.middle_widget)
-        self.splitter_horizontal.addWidget(self.right_widget)
-        self.splitter_horizontal.setSizes([600,600, 600])
-        self._center_widget_layout.addWidget(self.splitter_horizontal)
+        # Reproduce the original three-column layout:
+        #   Overview | Echo Selection / Echoes / Echo pairs / Multiple frequencies
+        #           | Inverse 𝑓 / Results output
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.overview_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.analysis_dock)
+        self.splitDockWidget(self.analysis_dock, self.arrow_plot_dock, Qt.Horizontal)
+        self.splitDockWidget(self.analysis_dock, self.echoes_dock, Qt.Vertical)
+        self.splitDockWidget(self.echoes_dock, self.pairs_dock, Qt.Vertical)
+        self.splitDockWidget(self.pairs_dock, self.multiple_frequencies_dock, Qt.Vertical)
+        self.splitDockWidget(self.arrow_plot_dock, self.output_dock, Qt.Vertical)
 
+        self.resizeDocks(
+            [self.overview_dock, self.analysis_dock, self.arrow_plot_dock],
+            [600, 600, 600], Qt.Horizontal)
+        # Give the plot the lion's share; the tables get a usable, resizable slice.
+        self.resizeDocks(
+            [self.analysis_dock, self.echoes_dock, self.pairs_dock,
+             self.multiple_frequencies_dock],
+            [340, 150, 170, 130], Qt.Vertical)
 
-        self.center_widget.setLayout(self._center_widget_layout)
-        self._layout.addWidget(self.center_widget)
+        self.docks = [self.overview_dock, self.analysis_dock,
+                      self.echoes_dock, self.pairs_dock,
+                      self.multiple_frequencies_dock, self.arrow_plot_dock,
+                      self.output_dock]
 
-        
-        calc_btn = QtWidgets.QPushButton('Correlate')
-        #_buttons_layout_bottom.addWidget(calc_btn)
-        #_buttons_layout_bottom.addWidget(QtWidgets.QLabel('2-way travel time:'))
-        output_ebx = QtWidgets.QLineEdit('')
-        #_buttons_layout_bottom.addWidget(output_ebx)
-       
-        
-        self.buttons_widget_bottom.setLayout(self._buttons_layout_bottom)
-        #self._layout.addWidget(self.buttons_widget_bottom)
-        self.my_widget.setLayout(self._layout)
+    def _make_dock(self, title, widget):
+        dock = QtWidgets.QDockWidget(title, self)
+        dock.setObjectName(title.replace(' ', '_'))
+        dock.setWidget(widget)
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable |
+                         QtWidgets.QDockWidget.DockWidgetFloatable |
+                         QtWidgets.QDockWidget.DockWidgetClosable)
+        return dock
 
     
 

@@ -356,6 +356,27 @@ class EchoesResultsModel():
         
 
     
+    def save_pairs_def(self, condition, echoes_def, pairs, echo_names=None):
+        '''Persist the freeform echo pairs, echo-window definitions, and echo
+        names for a condition. Stored additively under the condition's dataset so
+        older projects (which lack these keys) keep loading unchanged.'''
+        if condition and 'datasets' in self.project and condition in self.project['datasets']:
+            self.project['datasets'][condition]['echoes_def'] = echoes_def
+            self.project['datasets'][condition]['pairs'] = pairs
+            if echo_names is not None:
+                self.project['datasets'][condition]['echo_names'] = echo_names
+
+    def get_pairs_def(self, condition):
+        echoes_def = {'P': [], 'S': []}
+        pairs = {'P': [], 'S': []}
+        echo_names = {'P': [], 'S': []}
+        if 'datasets' in self.project and condition in self.project.get('datasets', {}):
+            ds = self.project['datasets'][condition]
+            echoes_def = ds.get('echoes_def', echoes_def)
+            pairs = ds.get('pairs', pairs)
+            echo_names = ds.get('echo_names', echo_names)
+        return echoes_def, pairs, echo_names
+
     def get_echoes(self):
         return self.echoes_p, self.echoes_s
 

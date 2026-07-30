@@ -228,12 +228,14 @@ class myVLine(pg.InfiniteLine):
 
 class CustomViewBox(pg.ViewBox):  
     plotMouseCursorSignal = pyqtSignal(float)
-    plotMouseCursor2Signal = pyqtSignal(float)  
+    plotMouseCursor2Signal = pyqtSignal(float)
     viewBoxScrollSingal = pyqtSignal(float)
     cursor_y_signal = pyqtSignal(float)
+    regionDragSignal = pyqtSignal(float, float)
     def __init__(self, *args, **kwds):
         super().__init__()
-        
+
+        self.selectMode = False
         self.cursor_signals = [self.plotMouseCursorSignal, self.plotMouseCursor2Signal]
         self.vLine = myVLine(movable=False, pen=pg.mkPen(color=(0, 255, 0), width=2 , style=QtCore.Qt.DashLine))
         
@@ -280,9 +282,26 @@ class CustomViewBox(pg.ViewBox):
                 #print(y)
                 self.cursorPoint=x
                 self.cursorPoint_y = y
-                self.plotMouseCursorSignal.emit(x)   
-                self.cursor_y_signal.emit(y) 
+                self.plotMouseCursorSignal.emit(x)
+                self.cursor_y_signal.emit(y)
         #ev.accept()
+
+    def mouseDragEvent(self, ev, axis=None):
+        '''
+        In select mode a left-button drag defines an x-span (used to set the
+        active echo region) instead of the default rubber-band zoom.
+        '''
+        if self.selectMode and ev.button() == QtCore.Qt.LeftButton:
+            p1 = self.mapToView(ev.buttonDownPos())
+            p2 = self.mapToView(ev.pos())
+            l, r = sorted([p1.x(), p2.x()])
+            self.regionDragSignal.emit(float(l), float(r))
+            ev.accept()
+        else:
+            super().mouseDragEvent(ev, axis=axis)
+
+    def setSelectMode(self, state):
+        self.selectMode = bool(state)
 
     def wheelEvent(self, ev, axis=None):
 
@@ -548,7 +567,16 @@ class PltWidget(pg.PlotWidget):
         else:
             mMode = pg.ViewBox.PanMode
         vb.setMouseMode(mMode)
-        
+
+    def setSelectMode(self, state):
+        '''When on, a left-drag on the plot defines an x-span (regionDragSignal)
+        instead of rubber-band zooming.'''
+        self.getViewBox().setSelectMode(state)
+
+    @property
+    def regionDragSignal(self):
+        return self.getViewBox().regionDragSignal
+
     def fastCursorMove(self, evt):
         pos = evt[0]  ## using signal proxy turns original arguments into a tuple
         if self.sceneBoundingRect().contains(pos):

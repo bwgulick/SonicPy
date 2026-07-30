@@ -272,8 +272,10 @@ class OverViewWidget(QWidget):
         self.f_settings_set_visible(False)
 
     def make_bottom_scroll_widgets(self):
-        
 
+        # The "Frequency" tab stacks all P-T steps for one frequency, so this
+        # scrollbar selects which frequency is shown -> caption it "Frequency:".
+        self.freq_scroll_lbl = QtWidgets.QLabel("Frequency: ")
         self.freq_scroll = QtWidgets.QScrollBar(orientation=Qt.Horizontal, parent=self.freqs_widget)
         self.freq_scroll.setMinimum(0)
         self.freq_scroll.setMaximum(17)
@@ -284,11 +286,14 @@ class OverViewWidget(QWidget):
         self.freq_plus_btn = QtWidgets.QPushButton(str("+"))
         self.freq_plus_btn.setMaximumWidth(35)
         self.freq_plus_btn.setObjectName('freq_btn_last')
+        self._freqs_widget_layout.addWidget(self.freq_scroll_lbl)
         self._freqs_widget_layout.addWidget(self.freq_minus_btn)
         self._freqs_widget_layout.addWidget(self.freq_scroll)
         self._freqs_widget_layout.addWidget(self.freq_plus_btn)
-        
-        
+
+        # The "P-T Step" tab stacks all frequencies for one P-T step, so this
+        # scrollbar selects which P-T step is shown -> caption it "P-T step:".
+        self.cond_scroll_lbl = QtWidgets.QLabel("P-T step: ")
         self.cond_scroll = QtWidgets.QScrollBar(orientation=Qt.Horizontal, parent=self.conds_widget)
         self.cond_scroll.setMinimum(0)
         self.cond_scroll.setMaximum(17)
@@ -299,6 +304,7 @@ class OverViewWidget(QWidget):
         self.cond_plus_btn = QtWidgets.QPushButton(str("+"))
         self.cond_plus_btn.setMaximumWidth(35)
         self.cond_plus_btn.setObjectName('cond_btn_last')
+        self._conds_widget_layout.addWidget(self.cond_scroll_lbl)
         self._conds_widget_layout.addWidget(self.cond_minus_btn)
         self._conds_widget_layout.addWidget(self.cond_scroll)
         self._conds_widget_layout.addWidget(self.cond_plus_btn)

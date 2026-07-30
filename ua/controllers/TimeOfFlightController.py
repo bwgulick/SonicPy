@@ -3,7 +3,7 @@
 
 import os.path, sys
 import shutil
-from PyQt5 import QtWidgets, QtGui
+from PyQt5 import QtWidgets, QtGui, QtCore
 from PyQt5.QtCore import QObject, pyqtSignal
 import numpy as np
 from functools import partial
@@ -102,6 +102,8 @@ class TimeOfFlightController(QObject):
         self.correlation_controller.cursor_position_signal.connect(self.overview_controller.sync_cursors)
         self.correlation_controller.correlation_saved_signal.connect(self.correlation_saved_signal_callback)
         self.correlation_controller.wave_type_toggled_signal.connect(self.wave_type_toggled_signal_callback)
+        self.correlation_controller.compute_pairs_signal.connect(self.compute_pairs_callback)
+        self.correlation_controller.pairs_changed_signal.connect(self.multiple_frequencies_controller.persist_pairs)
 
         self.arrow_plot_controller.arrow_plot_freq_cursor_changed_signal.connect(self.arrow_plot_freq_cursor_changed_signal_callback)
         self.arrow_plot_controller.arrow_plot_del_clicked_signal.connect(self.arrow_plot_del_clicked_signal_callback)
@@ -166,11 +168,13 @@ class TimeOfFlightController(QObject):
         new_filename = save_file_dialog(None, "New project file", filter = 'Time of Flight Analysis Project (*.bz;*.json)', warn_overwrite=True)
         if len(new_filename):
             QtWidgets.QApplication.processEvents()
+            self.multiple_frequencies_controller.persist_pairs()
             set_ok = self.echoes_results_model.save_project_as(new_filename)
-           
-        
+
+
 
     def save_project_act_callback(self):
+        self.multiple_frequencies_controller.persist_pairs()
         self.echoes_results_model.save_project()
 
 
@@ -284,9 +288,51 @@ class TimeOfFlightController(QObject):
         self.arrow_plot_controller.refresh_model()
 
     def wave_type_toggled_signal_callback(self, wave_type):
-        
+
         self.arrow_plot_controller.set_wave_type(wave_type)
         self.arrow_plot_controller.refresh_model()
+
+    def compute_pairs_callback(self):
+        '''Compute the full multi-frequency travel time for every pair of the
+        active wave type and write each result into the Echo Selection table.'''
+        cc = self.correlation_controller
+        mfc = self.multiple_frequencies_controller
+        if not len(mfc.model.files):
+            msg = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information, "Notice",
+                                        "No waveforms loaded for this condition")
+            msg.exec()
+            return
+        pairs = cc.get_active_pairs()
+        wave_type = cc.model.wave_type
+        progress = QtWidgets.QProgressDialog("Computing travel times", "Abort", 0, len(pairs), None)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.show()
+        QtWidgets.QApplication.processEvents()
+        for i, pair in enumerate(pairs):
+            progress.setValue(i)
+            QtWidgets.QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+            bounds = cc.get_pair_bounds(pair)
+            result = mfc.compute_pair_tau(bounds, wave_type)
+            if result:
+                tau_ns, sig_ns = self._avg_tau_ns(result)
+                cc.set_pair_tau(pair['id'], tau_ns, sig_ns)
+            else:
+                cc.set_pair_tau(pair['id'], None, None)
+        progress.close()
+        QtWidgets.QApplication.processEvents()
+        cc._refresh_pairs_table()
+        mfc.persist_pairs()
+
+    def _avg_tau_ns(self, result):
+        '''Average the min/max-correlation travel times (us) and return ns,
+        matching the Results Output convention.'''
+        times = [result[opt]['time_delay'] for opt in result]
+        stds = [result[opt]['time_delay_std'] for opt in result]
+        tau = sum(times) / len(times) * 1e3
+        std = sum(stds) / len(stds) * 1e3
+        return round(tau, 3), round(std, 3)
     ###
     # Arrow plot controller callbacks
     ##
