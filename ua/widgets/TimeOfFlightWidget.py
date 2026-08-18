@@ -13,13 +13,19 @@ from um.widgets.CustomWidgets import HorizontalSpacerItem, VerticalSpacerItem, F
 from .. import style_path, icons_path, title
 
 class TimeOfFlightWidget(QMainWindow):
-    
+
     preferences_signal = pyqtSignal()
     up_down_signal = pyqtSignal(str)
     panelClosedSignal = pyqtSignal()
 
+    # Bumped whenever the dock objectNames / layout structure change so that
+    # older saved layout blobs are ignored cleanly instead of partially applied.
+    # v2: split the Selected/Filtered/Correlation detail plots into their own dock.
+    LAYOUT_VERSION = 2
+
     def __init__(self, app, overview_widget, multiple_frequencies_widget, analysis_widget, arrow_plot_widget, output_widget):
         super().__init__()
+        self.setObjectName('TimeOfFlightWindow')
         self.app = app
         self.overview_widget = overview_widget
 
@@ -154,7 +160,7 @@ class TimeOfFlightWidget(QMainWindow):
         self.analysis_dock = self._make_dock('Echo Selection', self.analysis_widget)
         self.multiple_frequencies_dock = self._make_dock('Multiple frequencies', self.multiple_frequencies_widget)
         self.arrow_plot_dock = self._make_dock('Inverse 𝑓', self.arrow_plot_widget)
-        self.output_dock = self._make_dock('Results output', self.output_widget)
+        self.output_dock = self._make_dock('Conditions Selection', self.output_widget)
 
         # The Echoes and Echo pairs tables live inside the Echo Selection widget
         # but the user wants to move/resize them independently, so pull them out
@@ -164,13 +170,22 @@ class TimeOfFlightWidget(QMainWindow):
         self.echoes_dock = self._make_dock('Echoes', self.analysis_widget.echoes_group)
         self.pairs_dock = self._make_dock('Echo pairs', self.analysis_widget.pairs_group)
 
-        # Reproduce the original three-column layout:
-        #   Overview | Echo Selection / Echoes / Echo pairs / Multiple frequencies
-        #           | Inverse 𝑓 / Results output
+        # The Echo Selection panel keeps the main waveform plot; its lower
+        # Selected/Filtered/Correlation detail plots are pulled out into their own
+        # movable dock. Reparenting into the QDockWidget removes the detail
+        # container from the analysis widget's splitter; every detail attribute
+        # (detail_win0/1/2, detail_plot*, the tab widget) stays valid.
+        self.detail_dock = self._make_dock('Echo Detail', self.analysis_widget._detail_widget)
+
+        # Reproduce the original three-column layout, now with Echo Detail below
+        # Echo Selection in the middle column:
+        #   Overview | Echo Selection / Echo Detail / Echoes / Echo pairs / Multiple frequencies
+        #           | Inverse 𝑓 / Conditions Selection
         self.addDockWidget(Qt.LeftDockWidgetArea, self.overview_dock)
         self.addDockWidget(Qt.RightDockWidgetArea, self.analysis_dock)
         self.splitDockWidget(self.analysis_dock, self.arrow_plot_dock, Qt.Horizontal)
-        self.splitDockWidget(self.analysis_dock, self.echoes_dock, Qt.Vertical)
+        self.splitDockWidget(self.analysis_dock, self.detail_dock, Qt.Vertical)
+        self.splitDockWidget(self.detail_dock, self.echoes_dock, Qt.Vertical)
         self.splitDockWidget(self.echoes_dock, self.pairs_dock, Qt.Vertical)
         self.splitDockWidget(self.pairs_dock, self.multiple_frequencies_dock, Qt.Vertical)
         self.splitDockWidget(self.arrow_plot_dock, self.output_dock, Qt.Vertical)
@@ -178,13 +193,17 @@ class TimeOfFlightWidget(QMainWindow):
         self.resizeDocks(
             [self.overview_dock, self.analysis_dock, self.arrow_plot_dock],
             [600, 600, 600], Qt.Horizontal)
-        # Give the plot the lion's share; the tables get a usable, resizable slice.
+        # Give the plots the lion's share; the tables get a usable, resizable slice.
         self.resizeDocks(
-            [self.analysis_dock, self.echoes_dock, self.pairs_dock,
-             self.multiple_frequencies_dock],
-            [340, 150, 170, 130], Qt.Vertical)
+            [self.analysis_dock, self.detail_dock, self.echoes_dock,
+             self.pairs_dock, self.multiple_frequencies_dock],
+            [280, 260, 150, 170, 130], Qt.Vertical)
+        # Conditions Selection only needs to show a filename-length list, so give
+        # it a narrow default share of its column (the Inverse 𝑓 plot keeps the rest).
+        self.resizeDocks([self.arrow_plot_dock, self.output_dock],
+                         [700, 220], Qt.Horizontal)
 
-        self.docks = [self.overview_dock, self.analysis_dock,
+        self.docks = [self.overview_dock, self.analysis_dock, self.detail_dock,
                       self.echoes_dock, self.pairs_dock,
                       self.multiple_frequencies_dock, self.arrow_plot_dock,
                       self.output_dock]
@@ -199,9 +218,37 @@ class TimeOfFlightWidget(QMainWindow):
                          QtWidgets.QDockWidget.DockWidgetClosable)
         return dock
 
-    
+    def get_layout_state(self):
+        '''Serialize the current dock arrangement (sizes, positions, floating/
+        tabbed state) and the window frame into a JSON-safe dict. Stored in the
+        project file so reopening a project restores the same workspace.'''
+        return {
+            'version': self.LAYOUT_VERSION,
+            'state': bytes(self.saveState()).hex(),
+            'geometry': bytes(self.saveGeometry()).hex(),
+        }
 
-        
+    def restore_layout_state(self, layout):
+        '''Restore a layout dict produced by get_layout_state(). Returns True on
+        success; on any incompatibility (missing/old version, changed dock names)
+        it leaves the default layout untouched and returns False. Never raises.'''
+        if not isinstance(layout, dict):
+            return False
+        if layout.get('version') != self.LAYOUT_VERSION:
+            return False
+        ok = True
+        try:
+            geo = layout.get('geometry')
+            if geo:
+                self.restoreGeometry(QtCore.QByteArray.fromHex(bytes(geo, 'ascii')))
+            state = layout.get('state')
+            if state:
+                ok = self.restoreState(QtCore.QByteArray.fromHex(bytes(state, 'ascii')))
+        except Exception:
+            return False
+        return bool(ok)
+
+
 
 
     def style_widgets(self):
@@ -223,7 +270,18 @@ class TimeOfFlightWidget(QMainWindow):
                 min-width: 110;
                 max-width: 110;
             }
-            
+            QMainWindow::separator {
+                background: #5a5a5a;
+            }
+            QMainWindow::separator:horizontal {
+                width: 6px;
+            }
+            QMainWindow::separator:vertical {
+                height: 6px;
+            }
+            QMainWindow::separator:hover {
+                background: #8a8a8a;
+            }
         """)
 
     

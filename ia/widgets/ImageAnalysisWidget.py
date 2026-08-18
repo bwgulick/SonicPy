@@ -47,6 +47,7 @@ class ImageAnalysisWidget(QMainWindow):
 
         self.make_roi()
         self.make_edge_roi(self.plots['absorbance'])
+        self.make_lr_guides(self.plots['absorbance'])
 
 
 
@@ -94,14 +95,19 @@ class ImageAnalysisWidget(QMainWindow):
         
         self.compute_btn = QtWidgets.QPushButton("Compute")
         self.compute_btn.setCheckable(True)
+        self.process_all_btn = QtWidgets.QPushButton("Process All")
+        self.process_all_btn.setToolTip(
+            "Measure every image in the folder using the current crop, sample "
+            "type, fit settings and edge-box size. Edges are re-detected per image.")
         self.fname_lbl = QtWidgets.QLineEdit('')
         
         self.save_btn = QtWidgets.QPushButton('Save result')
         self.result_lbl = QtWidgets.QLineEdit('')
 
         self._buttons_layout_top.addWidget(self.open_btn)
-        
+
         self._buttons_layout_top.addWidget(self.compute_btn)
+        self._buttons_layout_top.addWidget(self.process_all_btn)
         self._buttons_layout_top.addWidget(QtWidgets.QLabel("   File"))
         self._buttons_layout_top.addWidget(self.fname_lbl)
        
@@ -200,6 +206,24 @@ class ImageAnalysisWidget(QMainWindow):
         self.threshold_num.setMaximumWidth(50)
         self._menu_bar_layout.addWidget(QtWidgets.QLabel('   Fit threshold'))
         self._menu_bar_layout.addWidget(self.threshold_num)
+
+        # Display-only contrast enhancement (never affects the measured length).
+        self.contrast_combo = QtWidgets.QComboBox()
+        self.contrast_combo.addItems(['None', 'Percentile', 'CLAHE', 'Gamma'])
+        self.contrast_combo.setMaximumWidth(100)
+        self.contrast_combo.setToolTip(
+            "Display-only contrast for the source/absorbance views. Reveals faint "
+            "edges under high pressure; the measured Distance is unchanged.")
+        self.contrast_num = NumberTextField()
+        self.contrast_num.setMinimum(0)
+        self.contrast_num.setMaximum(100)
+        self.contrast_num.setValue(2)
+        self.contrast_num.setMaximumWidth(50)
+        self.contrast_num.setToolTip(
+            "Percentile: clip % per tail.  CLAHE: clip limit.  Gamma: exponent (<1 brightens).")
+        self._menu_bar_layout.addWidget(QtWidgets.QLabel('   Contrast'))
+        self._menu_bar_layout.addWidget(self.contrast_combo)
+        self._menu_bar_layout.addWidget(self.contrast_num)
 
         # Measurement mode controls
         self.measurement_mode_widget = QtWidgets.QWidget(self.analysis_widget)
@@ -368,6 +392,19 @@ class ImageAnalysisWidget(QMainWindow):
 
         self.edge_roi_2.setZValue(10)  # make sure ROI is drawn above image
         plot.addItem(self.edge_roi_2)
+
+    def make_lr_guides(self, plot):
+        # Draggable left/right vertical guides that define the horizontal window
+        # over which the top/bottom length is fit. Coordinates are binned
+        # absorbance-image columns, same as the edge ROIs.
+        pen = pg.mkPen((0, 120, 255), width=2, style=pg.QtCore.Qt.DashLine)
+        hover = pg.mkPen((0, 120, 255), width=3)
+        self.lr_left = pg.InfiniteLine(angle=90, movable=True, pen=pen, hoverPen=hover)
+        self.lr_right = pg.InfiniteLine(angle=90, movable=True, pen=pen, hoverPen=hover)
+        self.lr_left.setZValue(15)
+        self.lr_right.setZValue(15)
+        plot.addItem(self.lr_left)
+        plot.addItem(self.lr_right)
 
 
     def closeEvent(self, QCloseEvent, *event):

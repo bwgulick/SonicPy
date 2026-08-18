@@ -70,7 +70,8 @@ class ImageAnalysisController(QObject):
         self.display_window.open_btn.clicked.connect(self.open_btn_callback)
         self.display_window.file_widget.open_btn.clicked.connect(self.on_foler_clicked)
         self.display_window.compute_btn.clicked .connect(self.update_cropped)
-        
+        self.display_window.process_all_btn.clicked.connect(self.process_all_callback)
+
 
         self.display_window.crop_btn.clicked.connect(self.autocrop_btn_callback)
         self.display_window.rot_angle_edit.editingFinished.connect(self.rot_angle_callback)
@@ -83,6 +84,14 @@ class ImageAnalysisController(QObject):
         self.display_window.order_options.buttonClicked.connect(self.order_options_callback)
 
         self.display_window.threshold_num.editingFinished.connect(self.threshold_num_callback)
+
+        # Display-only contrast enhancement.
+        self.display_window.contrast_combo.currentIndexChanged.connect(self.contrast_method_changed)
+        self.display_window.contrast_num.editingFinished.connect(self.contrast_changed)
+
+        # Left/right fit-window guides.
+        self.display_window.lr_left.sigPositionChangeFinished.connect(self.lr_guides_changed)
+        self.display_window.lr_right.sigPositionChangeFinished.connect(self.lr_guides_changed)
 
         self.display_window.file_widget.export_btn.clicked.connect(self.save_btn_callback)
         
@@ -141,46 +150,23 @@ class ImageAnalysisController(QObject):
             self.set_edge_types(edges)
 
     def update_cropped(self):
-       
+
         if self.model.src is not None and self.display_window.compute_btn.isChecked() :
-        
-            thresholds = self.model.settings['edge_fit_threshold']
-            orders = self.model.settings['edge_polynomial_order']
+
+            # Shared fit + distance math (same code the batch path uses).
+            res = self.model.compute_distance()
 
             img_plots = [self.display_window.imgs['edge1 fit'],self.display_window.imgs['edge2 fit']]
             edge_plots = [self.display_window.edge1_plt, self.display_window.edge2_plt]
             abs_plot = self.display_window.abs_plt
-            
-            abs_datas = []
 
-            
-            #legends = [self.display_window.edge1_plt_legend, self.display_window.edge2_plt_legend]
-        
-            for i, roi in enumerate(self.model.rois):
-                masked_img, x_fit, y_fit = roi.compute(threshold = thresholds[i], order = orders[i])
-                img_plots[i].setImage(masked_img)
+            for i in range(len(self.model.rois)):
+                img_plots[i].setImage(res['masked'][i])
+                x_fit, y_fit = res['fits'][i]
                 edge_plots[i].setData(x_fit, y_fit)
-                '''p = roi.text
-                note =  "y(x) = p[0]*x<sup>n</sup>+p[1]*x<sup>n-1</sup>+...+p[n]; p=" + p
-                legends[i].renameItem(0,note)'''
-                abs_datas.append([x_fit + roi.pos[0], y_fit + roi.pos[1]])
 
-            roi1 = self.display_window.edge_roi_1
-            roi2 = self.display_window.edge_roi_2
-            r1_xmin = roi1.pos()[0]
-            r1_xmax = roi1.pos()[0] + roi1.size()[0]
-            r2_xmin = roi2.pos()[0]
-            r2_xmax = roi2.pos()[0] + roi2.size()[0]
-
-            min_x = min(r1_xmin,r2_xmin)
-            max_x = max(r1_xmax,r2_xmax)
-            
-            n_samples = 50
-            x_test = np.linspace(min_x, max_x, n_samples)
-            edge1_y = self.model.rois[0].predict(x_test-self.model.rois[0].pos[0],orders[0])+ self.model.rois[0].pos[1]
-            edge2_y = self.model.rois[1].predict(x_test-self.model.rois[1].pos[0],orders[1])+ self.model.rois[1].pos[1]
-            y_diff = abs(np.mean(edge2_y - edge1_y))
-            std_dev = np.std(edge2_y - edge1_y)
+            y_diff = res['y_diff']
+            std_dev = res['std_dev']
 
             output_txt = "mean: " + str(round(y_diff,1)) + '; std: ' +str(round(std_dev,1))
             cal = self.model.settings.get('calibration_um_per_pixel')
@@ -188,57 +174,221 @@ class ImageAnalysisController(QObject):
                 output_txt += '  (%.2f um)' % (y_diff * cal)
             self.display_window.result_lbl.setText(output_txt)
 
-            data_x = np.array([])
-            data_y = np.array([])
-    
-            data_x = np.append(np.append(x_test,np.nan),x_test)
-            data_y = np.append(np.append(edge1_y,np.nan),edge2_y)
-                
+            data_x = np.append(np.append(res['x_test'],np.nan),res['x_test'])
+            data_y = np.append(np.append(res['edge1_y'],np.nan),res['edge2_y'])
+
             abs_plot.setData(data_x, data_y)
             fname = self.model.filename
 
-            y_0 = self.model.settings['crop_limits'][0][1]
-
-            self.display_window.file_widget.fileModel.set_fname_result(fname, {'mean':str(round(y_diff,1)), 
+            self.display_window.file_widget.fileModel.set_fname_result(fname, {'mean':str(round(y_diff,1)),
                                                                                'std.dev':str(round(std_dev,1)),
-                                                                               'edge1':str(round(np.mean(edge1_y)+y_0,1)),
-                                                                               'edge2':str(round(np.mean(edge2_y)+y_0,1))})
+                                                                               'edge1':str(round(res['edge1_mean'],1)),
+                                                                               'edge2':str(round(res['edge2_mean'],1)),
+                                                                               'flag':'OK',
+                                                                               'reason':''})
             self.display_window.file_widget.repaint()
 
-    def update_frame(self):
+    def _current_setup(self):
+        """Capture the one-time setup (from the representative image) that the
+        batch reuses for every file: crop box, sample type, fit order/threshold,
+        edge-band height, edge x-extent, and a plausible separation range.
+
+        Edge y-centers are NOT captured — the batch re-detects them per image
+        (the sample can jump between frames).
+        """
+        roi1 = self.display_window.edge_roi_1
+        roi2 = self.display_window.edge_roi_2
+
+        h1 = roi1.size()[1]
+        h2 = roi2.size()[1]
+        band_half_height = (h1 + h2) / 4.0  # average box height / 2
+
+        # Horizontal extent: intersection of the two boxes, so the fit stays on
+        # the flat top/bottom surfaces the user bracketed.
+        left = max(roi1.pos()[0], roi2.pos()[0])
+        right = min(roi1.pos()[0] + roi1.size()[0], roi2.pos()[0] + roi2.size()[0])
+        if right - left < 1:  # boxes don't overlap in x: fall back to full width
+            left = 0
+            right = self.model.image.shape[1]
+        edge_x_pos = left
+        edge_x_width = max(1, right - left)
+
+        # Separation prior from the current box centers.
+        c1 = roi1.pos()[1] + h1 / 2.0
+        c2 = roi2.pos()[1] + h2 / 2.0
+        sep = abs(c2 - c1)
+        img_h = self.model.image.shape[0]
+        min_sep = max(5, sep * 0.4) if sep > 0 else 5
+        max_sep = min(img_h, sep * 2.0) if sep > 0 else img_h
+
+        return dict(crop_limits=self.model.settings['crop_limits'],
+                    edge_types=self.get_edge_types(),
+                    orders=self.model.settings['edge_polynomial_order'],
+                    thresholds=self.model.settings['edge_fit_threshold'],
+                    band_half_height=band_half_height,
+                    edge_x_pos=edge_x_pos, edge_x_width=edge_x_width,
+                    min_sep=min_sep, max_sep=max_sep,
+                    lr_limits=self.model.settings.get('lr_limits'))
+
+    def process_all_callback(self, *args, **kwargs):
+        """Process every image in the loaded folder using the current setup."""
+        if self.model.src is None or not self.model.settings.get('crop_limits'):
+            show_message(self.display_window, QtWidgets.QMessageBox.Warning, "Set up first",
+                         "Load a representative image and set the crop + edge boxes "
+                         "(and click Compute once) before running Process All.")
+            return
+        if len(self.model.rois) < 2:
+            show_message(self.display_window, QtWidgets.QMessageBox.Warning, "Set up first",
+                         "Two edge regions are required. Load an image and configure "
+                         "the edge boxes before running Process All.")
+            return
+
+        setup = self._current_setup()
+
+        fmodel = self.display_window.file_widget.fileModel
+        files = list(fmodel.get_file_paths().values())
+        if not files:
+            show_message(self.display_window, QtWidgets.QMessageBox.Warning, "No files",
+                         "No images found in the current folder.")
+            return
+
+        dlg = QtWidgets.QProgressDialog("Processing images...", "Cancel", 0, len(files),
+                                        self.display_window)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+
+        processed = 0
+        flagged = 0
+        for i, f in enumerate(files):
+            if dlg.wasCanceled():
+                break
+            dlg.setValue(i)
+            dlg.setLabelText(os.path.basename(f))
+            result = self.model.process_file(f, **setup)
+            fmodel.set_fname_result(f, result)
+            processed += 1
+            if result.get('flag') == 'LOW':
+                flagged += 1
+            QtWidgets.QApplication.processEvents()
+        dlg.setValue(len(files))
+
+        # Refresh the table so the new columns render.
+        self.display_window.file_widget.listview.viewport().update()
+        self.display_window.file_widget.repaint()
+
+        show_message(self.display_window, QtWidgets.QMessageBox.Information, "Batch complete",
+                     "Processed %d of %d images.\n%d flagged low-confidence." %
+                     (processed, len(files), flagged))
+
+    def update_frame(self, estimate_lr=True):
         image = self.model.image
         img_shape = image.shape
 
         #filtered = self.model.compute_sobel()
-        
-        self.display_window.imgs['absorbance'].setImage(image)
+
+        self._display_absorbance()
 
         #self.display_window.imgs['frame cropped'].setImage(image )
         #self.display_window.imgs['sobel y'].setImage(filtered)
-        
 
-        edges_dict = self.model.estimate_edges()
-        edges = list(edges_dict.keys())[:2]
-        
-        #self.display_window.plots['sobel vertical mean'].plot(self.model.sobel_mean_vertical, clear=True)
-        #self.display_window.plots['sobel vertical mean'].plot(self.model.blured_sobel_mean_vertical )
+        # Robust signed-gradient edge detection. Places edge_roi_1 on the upper
+        # edge and edge_roi_2 on the lower edge (matches get_edge_types()).
+        # Detection uses the current left/right window (settings['lr_limits']);
+        # if it can't confidently find both edges, the ROIs are left where they
+        # are so the user can position them manually.
+        sel = self.model.select_edges()
 
         rois = [self.display_window.edge_roi_1,self.display_window.edge_roi_2]
-        self.model.rois = []
-       
-        for i, edge in enumerate(edges):
-            roi = rois[i]
-            roi.sigRegionChangeFinished.disconnect(self.roi_changed_callback)
-            roi.setPos(0, edge-edges_dict[edge][1]/2-40)
-            roi.setSize((img_shape[1], edges_dict[edge][1]+80))
-            roi.sigRegionChangeFinished.connect(self.roi_changed_callback)
 
+        if sel.get('ok'):
+            # Auto-estimate the left/right window from the detected rows (unless
+            # the user has already placed guides and we're only recomputing).
+            if estimate_lr or not self.model.settings.get('lr_limits'):
+                self.model.settings['lr_limits'] = self.model.estimate_lr_edges(
+                    sel['row1'], sel['row2'])
+            x_left, x_right = self.model.settings['lr_limits']
+            self._place_lr_guides(x_left, x_right)
+
+            # The guides own the horizontal extent: fit only those columns.
+            geoms = self.model.edge_geometries(sel, x_pos=x_left,
+                                               x_width=max(1, x_right - x_left))
+            for i, (pos, size) in enumerate(geoms):
+                roi = rois[i]
+                roi.sigRegionChangeFinished.disconnect(self.roi_changed_callback)
+                roi.setPos(pos[0], pos[1])
+                roi.setSize((size[0], size[1]))
+                roi.sigRegionChangeFinished.connect(self.roi_changed_callback)
+
+        self.model.rois = []
         img = self.display_window.imgs['absorbance']
-        for i, roi in enumerate(rois):  
+        for i, roi in enumerate(rois):
             selected = roi.getArrayRegion(self.model.image, img)
             self.model.add_ROI(selected, roi.pos(), roi.size())
 
         self.update_roi()
+
+    def _place_lr_guides(self, x_left, x_right):
+        """Move the left/right guide lines without triggering their callback."""
+        for line, val in [(self.display_window.lr_left, x_left),
+                          (self.display_window.lr_right, x_right)]:
+            try:
+                line.sigPositionChangeFinished.disconnect(self.lr_guides_changed)
+            except (TypeError, RuntimeError):
+                pass
+            line.setValue(val)
+            line.sigPositionChangeFinished.connect(self.lr_guides_changed)
+
+    def lr_guides_changed(self, *args, **kwargs):
+        """User dragged a left/right guide: store the new window, re-run edge
+        detection within it and refresh the length (without re-estimating the
+        guides, so the user's placement is respected)."""
+        if self.model.src is None or self.model.image is None:
+            return
+        x_left = self.display_window.lr_left.value()
+        x_right = self.display_window.lr_right.value()
+        if x_right < x_left:
+            x_left, x_right = x_right, x_left
+        W = self.model.image.shape[1]
+        x_left = int(max(0, min(x_left, W - 1)))
+        x_right = int(max(x_left + 1, min(x_right, W)))
+        self.model.settings['lr_limits'] = [x_left, x_right]
+        self.update_frame(estimate_lr=False)
+        self.update_cropped()
+
+    def _display_src(self):
+        """Show the source image with the current display-only contrast."""
+        if self.model.src is None:
+            return
+        dc = self.model.settings.get('display_contrast', {})
+        img = self.model.enhance_for_display(self.model.src, dc.get('method', 'none'),
+                                             dc.get('param'))
+        self.display_window.imgs['src'].setImage(img)
+
+    def _display_absorbance(self):
+        """Show the absorbance image with the current display-only contrast."""
+        if self.model.image is None:
+            return
+        dc = self.model.settings.get('display_contrast', {})
+        img = self.model.enhance_for_display(self.model.image, dc.get('method', 'none'),
+                                             dc.get('param'))
+        self.display_window.imgs['absorbance'].setImage(img)
+
+    def contrast_method_changed(self, *args, **kwargs):
+        """Contrast method combo changed: seed a sensible default parameter, then
+        re-render."""
+        method = self.display_window.contrast_combo.currentText().lower()
+        defaults = {'none': 0, 'percentile': 2, 'clahe': 2, 'gamma': 0.5}
+        self.display_window.contrast_num.setValue(defaults.get(method, 2))
+        self.contrast_changed()
+
+    def contrast_changed(self, *args, **kwargs):
+        """Apply the display-only contrast enhancement (never touches the
+        measured length)."""
+        method = self.display_window.contrast_combo.currentText().lower()
+        param = self.display_window.contrast_num.value()
+        self.model.settings['display_contrast'] = {'method': method, 'param': param}
+        self._display_src()
+        self._display_absorbance()
 
     def set_folder_path(self, folder):
         self.folder_path = folder
@@ -247,7 +397,7 @@ class ImageAnalysisController(QObject):
             if not self.display_window.file_widget.initialized :
                 self.display_window.file_widget.init_listview(folder)
             else:
-                self.display_window.file_widget.listview.setRootIndex(self.display_window.file_widget. fileModel.setRootPath(folder))
+                self.display_window.file_widget.set_root(folder)
 
     def on_foler_clicked(self, index):
 
@@ -296,7 +446,12 @@ class ImageAnalysisController(QObject):
             return
 
         self.display_window.fname_lbl.setText(os.path.split(filename)[-1])
-        self.display_window.imgs['src'].setImage(self.model.src)
+        self._display_src()
+
+        # A newly loaded image gets a fresh left/right auto-estimate (the sample
+        # can jump between frames); the user's guide drags only persist until the
+        # next load.
+        self.model.settings['lr_limits'] = []
 
         # Automatic crop / edge detection is tuned for specific sample
         # geometries and may fail on other images. Don't let that hide the
@@ -342,7 +497,7 @@ class ImageAnalysisController(QObject):
         if filename != '':
             self.model.load_file(filename)
             self.display_window.fname_lbl.setText(os.path.split( filename)[-1])
-            self.display_window.imgs['src'].setImage(self.model.src)
+            self._display_src()
 
             self.update_crop()
             self.model.filter_image()

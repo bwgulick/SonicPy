@@ -63,6 +63,16 @@ class EchoesResultsModel():
         else:
             return {}
 
+    def set_layout(self, layout):
+        '''Store the serialized workspace layout (dock sizes/positions) so it can
+        be restored when the project is reopened.'''
+        self.project['layout'] = layout
+
+    def get_layout(self):
+        '''Return the saved workspace layout, or None for older projects that
+        predate layout persistence.'''
+        return self.project.get('layout', None)
+
     def set_folders_sorted(self, folders_sorted):
         
         self.project['folders_sorted'] = folders_sorted

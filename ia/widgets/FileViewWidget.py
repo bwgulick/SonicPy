@@ -8,12 +8,26 @@ from ia.widgets.collapsible_widget import CollapsibleBox, EliderLabel
 
 import natsort
 
+# QFileSystemModel column index for "Date Modified" (Name=0, Size=1, Type=2).
+DATE_MODIFIED_COLUMN = 3
+
+
+def _sort_time(path):
+    """File modified time in seconds. Windows preserves this across copies, so
+    it reflects the original acquisition time. Returns 0.0 if the file can't be
+    stat'd so sorting never throws."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
 class YourSystemModel(QtWidgets.QFileSystemModel):
     folder_loaded = QtCore.pyqtSignal(str)
     def __init__(self):
         super(QtWidgets.QFileSystemModel, self).__init__()
  
-        self.horizontalHeaders = [''] * 8
+        self.horizontalHeaders = [''] * 9
         self.fnames = {}
         self.fldr_path = ''
 
@@ -34,27 +48,29 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
         cols = {4:'mean',
                 5:'std.dev',
                 6:'edge1',
-                7:'edge2'}
-       
+                7:'edge2',
+                8:'flag'}
+
         lines=[]
         first_line = ['File',
                     'Distance (pixels)',
                     'st.dev (pixels)',
                     'Edge 1 (pixels)',
-                    'Edge 2 (pixels)']
+                    'Edge 2 (pixels)',
+                    'Confidence']
         lines.append(first_line)
-       
+
         for fname in self.fnames:
 
             result = self.fnames [fname] ['result']
 
-            # Only export files that actually have a measured distance;
-            # skip files that were never analyzed (empty result).
-            if not result.get('mean'):
+            # Export files that were measured, plus any flagged as low-confidence
+            # (so failed frames are visible); skip files never analyzed.
+            if not result.get('mean') and result.get('flag') != 'LOW':
                 continue
 
             # Export just the file name, not the full (long) path.
-            line = [os.path.basename(fname),'','','','',]
+            line = [os.path.basename(fname),'','','','','',]
             for col in cols:
 
                 if cols[col] in result:
@@ -77,43 +93,62 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
         return self.fnames 
 
     def get_file_paths (self):
+        # Only return files that live directly in the current folder. This
+        # guards Process All / export against ever touching files left over
+        # from a previously opened folder (or a parent folder).
         f_out = {}
-        for f in sorted(list(self.fnames.keys())):
-            file = os.path.normpath(os.path.join(self.fldr_path, f))
+        root = os.path.normpath(self.fldr_path) if self.fldr_path else ''
+        keys = natsort.natsorted(self.fnames.keys(), key=lambda f: (_sort_time(f), f))
+        for f in keys:
+            file = os.path.normpath(f if os.path.isabs(f) else os.path.join(root, f))
+            if root and os.path.normpath(os.path.dirname(file)) != root:
+                continue
             f_out[f] = file
         return f_out
 
     def columnCount(self, parent = QtCore.QModelIndex()):
-        return super(YourSystemModel, self).columnCount()+4
+        return super(YourSystemModel, self).columnCount()+5
 
     def data(self, index, role):
 
         cols = {4:'mean',
                 5:'std.dev',
                 6:'edge1',
-                7:'edge2'}
-        for col in cols:
-            
-            if index.column() == col:
-                if role == QtCore.Qt.DisplayRole:
-                    model = QtWidgets.QFileSystemModel
-                    
-                    absp = model.fileInfo(self, index).absoluteFilePath()
-                    fpath = os.path.normpath(absp)
-                    f = ''
-                    if fpath in self.fnames:
-                        if cols[col] in self.fnames [fpath] ['result']:
-                            f = self.fnames [fpath] ['result'][cols[col]]
-                    return f
-                if role == QtCore.Qt.TextAlignmentRole:
-                    return QtCore.Qt.AlignHCenter
-   
+                7:'edge2',
+                8:'flag'}
+        if index.column() in cols:
+            col = index.column()
+            model = QtWidgets.QFileSystemModel
+            absp = model.fileInfo(self, index).absoluteFilePath()
+            fpath = os.path.normpath(absp)
+            result = self.fnames[fpath]['result'] if fpath in self.fnames else {}
+
+            if role == QtCore.Qt.DisplayRole:
+                return result.get(cols[col], '')
+            if role == QtCore.Qt.TextAlignmentRole:
+                return QtCore.Qt.AlignHCenter
+            if role == QtCore.Qt.BackgroundRole:
+                # Highlight the result columns of low-confidence (flagged) rows.
+                if result.get('flag') == 'LOW':
+                    return QtGui.QBrush(QtGui.QColor(255, 220, 220))
+            if role == QtCore.Qt.ToolTipRole:
+                return result.get('reason', '')
 
         return super(YourSystemModel, self).data(index, role)
 
     def setRootPath(self, path):
+        # Switching to a different folder: drop the files/results collected
+        # from the previously opened folder so we never read or process files
+        # that aren't in the folder the user just selected.
+        if os.path.normpath(path) != os.path.normpath(self.fldr_path or ''):
+            self.fnames = {}
         self.fldr_path = path
-        self.directoryLoaded.connect(self.loaded_callback)
+        # UniqueConnection avoids stacking duplicate slots (and a later
+        # double-disconnect) if setRootPath is called more than once.
+        try:
+            self.directoryLoaded.connect(self.loaded_callback, QtCore.Qt.UniqueConnection)
+        except TypeError:
+            pass
         ans = QtWidgets.QFileSystemModel.setRootPath(self, path)
         
         
@@ -135,8 +170,10 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
             if '.tif' in fname or ".bmp" in fname or ".jpg" in fname:
                 files.append(os.path.normpath(os.path.join(root, fname)))
 
-        files = natsort.natsorted(files)
-       
+        # Sort by file modified time (oldest first); natural name order breaks
+        # ties. This keeps the export/Process-All order matching the tree view.
+        files = natsort.natsorted(files, key=lambda f: (_sort_time(f), f))
+
         for f in files:
             if not f in self.fnames:
                 self.fnames[f] = {'result':{}}
@@ -213,16 +250,22 @@ class FileViewWidget(QtWidgets.QWidget):
         path = QtCore.QDir.homePath()
 
         self.fileModel = YourSystemModel()
-        
+
         self.fileModel.setFilter(QtCore.QDir.NoDotAndDotDot |  QtCore.QDir.Files)
 
         self.filters = ["*.tif", '*.tiff', "*.bmp", "*.jpg"]
         self.initialized = False
  
+    def set_root(self, folder):
+        # Point the view at `folder` and sort by Date Modified (oldest first).
+        # QFileSystemModel keeps this sort as the directory loads asynchronously.
+        self.listview.setRootIndex(self.fileModel.setRootPath(folder))
+        self.fileModel.sort(DATE_MODIFIED_COLUMN, QtCore.Qt.AscendingOrder)
+
     def init_listview(self, folder):
         self.fileModel.setNameFilters(self.filters)
         self.listview.setModel(self.fileModel)
-    
+
         self.listview.setColumnHidden(1, True)
         self.listview.setColumnHidden(2, True)
         self.listview.setColumnHidden(3, True)
@@ -231,15 +274,17 @@ class FileViewWidget(QtWidgets.QWidget):
         self.listview.setColumnWidth(5,55)
         self.listview.setColumnWidth(6,70)
         self.listview.setColumnWidth(7,70)
+        self.listview.setColumnWidth(8,90)
 
         self.fileModel.setHeaderData(0, Qt.Horizontal, "File")
         self.fileModel.setHeaderData(4, Qt.Horizontal, "Distance (px)")
         self.fileModel.setHeaderData(5, Qt.Horizontal, f'\N{GREEK SMALL LETTER SIGMA} (px)')
         self.fileModel.setHeaderData(6, Qt.Horizontal, "Edge 1 (px)")
         self.fileModel.setHeaderData(7, Qt.Horizontal, "Edge 2 (px)")
+        self.fileModel.setHeaderData(8, Qt.Horizontal, "Confidence")
 
         self.listview.selectionModel().selectionChanged.connect(self.on_selection_changed)
-        self.listview.setRootIndex(self. fileModel.setRootPath(folder))
+        self.set_root(folder)
         self.initialized = True
  
 
@@ -250,8 +295,8 @@ class FileViewWidget(QtWidgets.QWidget):
         files = self.fileModel.get_fnames()
         row = files.index(fname)
         child = idx.child(row, 0)
-        
-        self.listview.setCurrentIndex( child)
+
+        self.listview.setCurrentIndex(child)
 
     
    

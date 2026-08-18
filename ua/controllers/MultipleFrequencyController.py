@@ -275,7 +275,6 @@ class MultipleFrequencyController(QObject):
 
         fname = data['fname']
         fbase = data['freq']
-        freq_val_base = self.overview_controller.freq_str_ind_to_val(fbase)
         cond = data['cond']
 
         if self.model.cond != cond:
@@ -315,12 +314,8 @@ class MultipleFrequencyController(QObject):
             self.set_f_start_end(min_f, max_f)
 
             # restore any persisted echo windows + pairs for the new condition
-            # (before recover_selected_regions, which overrides echoes 1 & 2
-            # from the per-file saved bounds)
             self.restore_pairs(cond)
 
-
-        self.recover_selected_regions(fname, freq_val_base)
         self.update_analysis(data)
         self.update_arrow_plot(data)
 
@@ -347,33 +342,6 @@ class MultipleFrequencyController(QObject):
 
         self.widget.frequency_sweep_widget.f_min_bx.blockSignals(False)
         self.widget.frequency_sweep_widget.f_max_bx.blockSignals(False)
-
-    def recover_selected_regions(self, fname, freq_val):
-        
-        echoes_p, echoes_s = self.echoes_results_model.get_echoes()
-
-        # changing a region typically triggers calculations so we disable this connection here and reanable it later
-        self.correlation_controller.disconnect_regions()
-
-        if fname in echoes_p:
-            echoes = echoes_p[fname]
-            if freq_val in echoes:
-                echo_p = echoes_p[fname][freq_val]
-                bounds_p = echo_p['echo_bounds']
-                
-
-                self.correlation_controller.display_window.lr1_p.setRegion(bounds_p[0])
-                self.correlation_controller.display_window.lr2_p.setRegion(bounds_p[1])
-        
-        if fname in echoes_s:
-            echoes = echoes_s[fname]
-            if freq_val in echoes:
-                echo_s = echoes_s[fname][freq_val]
-                bounds_s = echo_s['echo_bounds']
-
-                self.correlation_controller.display_window.lr1_s.setRegion(bounds_s[0])
-                self.correlation_controller.display_window.lr2_s.setRegion(bounds_s[1])
-        self.correlation_controller.connect_regions()
 
     def update_analysis(self,data):
 

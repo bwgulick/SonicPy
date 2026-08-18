@@ -143,20 +143,30 @@ class TimeOfFlightController(QObject):
             folder = self.echoes_results_model.get_folder()
             mode = self.echoes_results_model.get_mode()
             if os.path.isdir(folder) and len(folder) and len(mode):
-                
+
                 QtWidgets.QApplication.processEvents()
                 self.overview_controller.set_US_folder(folder=folder, mode=mode)
+                self._restore_layout_deferred()
                 return
             if len(folder) and len(mode):
                 ret = QtWidgets.QMessageBox.question(self.widget, 'Data folder question', "Data folder not found, select new location?", QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
                 yes = ret == QtWidgets.QMessageBox.Yes
                 if yes:
                     self.overview_controller.open_btn_callback(mode = mode)
+                    self._restore_layout_deferred()
                 else:
                     self.close_project_act_callback()
                     msg = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Information,"Notice","Project data not available.")
                     msg.exec()
             
+
+    def _restore_layout_deferred(self):
+        '''Restore the saved workspace layout on the next event-loop turn, once
+        the synchronous data rebuild (which pumps its own processEvents) has
+        finished and the UI is fully built.'''
+        layout = self.echoes_results_model.get_layout()
+        if layout:
+            QtCore.QTimer.singleShot(0, lambda: self.widget.restore_layout_state(layout))
 
     def close_project_act_callback(self):
         self.widget.clear_title()
@@ -169,12 +179,14 @@ class TimeOfFlightController(QObject):
         if len(new_filename):
             QtWidgets.QApplication.processEvents()
             self.multiple_frequencies_controller.persist_pairs()
+            self.echoes_results_model.set_layout(self.widget.get_layout_state())
             set_ok = self.echoes_results_model.save_project_as(new_filename)
 
 
 
     def save_project_act_callback(self):
         self.multiple_frequencies_controller.persist_pairs()
+        self.echoes_results_model.set_layout(self.widget.get_layout_state())
         self.echoes_results_model.save_project()
 
 
@@ -262,7 +274,6 @@ class TimeOfFlightController(QObject):
         #self.arrow_plot_controller.
 
         self.output_controller.update_conditions()
-        self.output_controller.update_tof_results()
 
         mode = self.echoes_results_model.get_mode()
         if mode == 'broadband':

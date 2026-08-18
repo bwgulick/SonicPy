@@ -67,9 +67,10 @@ class ManualMeasurement():
 class ImageROI():
     def __init__(self, image, pos, size):
         self.image = image
-        
+
         self.pos = pos
         self.width = size
+        self.size = size  # (width, height); kept in sync so compute_distance can read the x-extent
         self.edge_type = 0  # 0 - foil, 1 - edge
 
         self.text = ''
@@ -164,15 +165,17 @@ class ImageAnalysisModel():
         self.rois = []
         self.manual_measurement = ManualMeasurement()
         self.measurement_mode = 'automatic'  # 'automatic' or 'manual'
-        self.settings = {'horizontal_bin':15, 
-                         'median_kernel_size':3, 
+        self.settings = {'horizontal_bin':15,
+                         'median_kernel_size':3,
                          'image_bits':8,
                          'crop_limits':[],
                          'edges_roi':  [],
                          'edge_polynomial_order':[2,2],
                          'edge_fit_threshold':[0.3,0.3],
                          'rotation_angle':0,
-                         'calibration_um_per_pixel': None}  # Optional calibration 
+                         'lr_limits':[],  # [x_left, x_right] in binned absorbance columns; [] -> auto 0.25/0.75
+                         'display_contrast':{'method':'none','param':None},  # display-only, never affects measurement
+                         'calibration_um_per_pixel': None}  # Optional calibration
 
     def add_ROI(self, selected,pos, size):
 
@@ -294,6 +297,52 @@ class ImageAnalysisModel():
             img = img / mx * 255.0
 
         return img
+
+    @staticmethod
+    def enhance_for_display(img, method='none', param=None):
+        """Return a contrast-enhanced *copy* of ``img`` for display only.
+
+        This never mutates the input and is never used by the measurement math,
+        so the reported length is identical with or without enhancement. It
+        exists because at high pressure the very dark WC anvils dominate the
+        global min/max stretch and squash the faint sample edges.
+
+        method:
+          'none'       - returned unchanged
+          'percentile' - clip to [param, 100-param] percentiles then stretch to
+                         0..255 (param defaults to 2). Robust to WC/air extremes.
+          'clahe'      - contrast-limited adaptive histogram equalization
+                         (param = clipLimit, default 2.0). Best at pulling faint
+                         edges out of the dark band.
+          'gamma'      - ((img/255)**param)*255 (param default 0.5) to brighten darks.
+        """
+        if img is None or method in (None, 'none', ''):
+            return img
+        out = np.asarray(img, dtype=float)
+        try:
+            if method == 'percentile':
+                p = float(param) if param else 2.0
+                p = min(max(p, 0.0), 49.0)
+                lo, hi = np.percentile(out, [p, 100.0 - p])
+                if hi > lo:
+                    out = np.clip((out - lo) / (hi - lo), 0.0, 1.0) * 255.0
+            elif method == 'clahe':
+                clip = float(param) if param else 2.0
+                mn, mx = float(out.min()), float(out.max())
+                scaled = (out - mn) / (mx - mn) * 255.0 if mx > mn else out * 0.0
+                clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8))
+                out = clahe.apply(scaled.astype(np.uint8)).astype(float)
+            elif method == 'gamma':
+                g = float(param) if param else 0.5
+                if g <= 0:
+                    g = 0.5
+                mx = float(out.max())
+                norm = out / mx if mx > 0 else out
+                out = np.power(np.clip(norm, 0.0, 1.0), g) * 255.0
+        except Exception:
+            # Enhancement is cosmetic; on any failure fall back to the raw image.
+            return img
+        return out
 
     def load_file(self, fname, autocrop=False):
         self.filename = fname
@@ -417,8 +466,302 @@ class ImageAnalysisModel():
         results = sobely
         return results
 
+    # ------------------------------------------------------------------
+    # Reusable edge-detection + distance math.
+    #
+    # These operate on ``self.image`` (the cropped, horizontally-binned
+    # absorbance image) and are shared by the interactive path (controller
+    # update_frame / update_cropped) and the headless batch path
+    # (process_file).  Keeping the math here means the "Process All" batch and
+    # a single interactive Compute produce identical numbers.
+    #
+    # Coordinate notes (see also the plan):
+    #   - x is BINNED by settings['horizontal_bin']; y (rows) is unbinned.
+    #   - All length math is vertical (rows) so binning never affects it.
+    #   - self.src is vertically flipped on load; y_0 = crop_limits[0][1] is
+    #     added back so reported edge positions are in src coordinates.
+    #   - Edge ordering matches get_edge_types(): rois[0] = edge_roi_1 = the
+    #     upper (smaller-row) edge; rois[1] = edge_roi_2 = the lower edge.
+    # ------------------------------------------------------------------
+
+    def compute_signed_edge_profile(self, x_lo_frac=0.25, x_hi_frac=0.75, x_lo=None, x_hi=None):
+        """Mean *signed* vertical gradient per row over the central columns.
+
+        Unlike estimate_edges (which uses abs(sobel_y) and so cannot tell a
+        rising edge from a falling one), the sign is preserved.  Note self.image
+        is the ABSORBANCE image, in which the dark X-ray sample is a *bright*
+        band: going down the image, its upper edge is a rising (positive) peak
+        and its lower edge is a falling (negative) peak.  Returns a 1D array of
+        length self.image.shape[0].
+        """
+        image = cv2.GaussianBlur(self.image, (5, 5), sigmaX=5, sigmaY=0)
+        sobely = cv2.Sobel(image, cv2.CV_64F, dx=0, dy=1)
+        y_size = sobely.shape[1]
+        if x_lo is None or x_hi is None:
+            lo = int(y_size * x_lo_frac)
+            hi = max(lo + 1, int(y_size * x_hi_frac))
+        else:
+            # Absolute column bounds from the left/right guides.
+            lo = int(max(0, min(x_lo, y_size - 1)))
+            hi = int(max(lo + 1, min(x_hi, y_size)))
+        return sobely[:, lo:hi].mean(axis=1)
+
+    def resolve_lr_bounds(self, x_lo=None, x_hi=None):
+        """Resolve the horizontal fit window to absolute (x_lo, x_hi) columns.
+
+        Explicit args win; otherwise fall back to settings['lr_limits']; if that
+        is empty return (None, None) so the fractional 0.25/0.75 default is used.
+        """
+        if x_lo is not None and x_hi is not None:
+            return x_lo, x_hi
+        lr = self.settings.get('lr_limits') or []
+        if len(lr) == 2 and lr[1] > lr[0]:
+            return lr[0], lr[1]
+        return None, None
+
+    def select_edges(self, band_half_height=None, min_sep=None, max_sep=None,
+                     x_lo_frac=0.25, x_hi_frac=0.75, min_conf=0.2,
+                     x_lo=None, x_hi=None):
+        """Pick exactly one upper and one lower edge row bracketing the sample,
+        using the signed gradient profile.
+
+        In the absorbance image the sample is a bright band, so its upper edge
+        is a rising (positive) peak and its lower edge is a falling (negative)
+        peak.  Among all valid (upper positive, lower negative) pairs with
+        upper_row < lower_row and a plausible separation, the pair with the
+        greatest combined prominence wins.
+
+        Returns a dict:
+          {'ok':bool, 'reason':str, 'row1':float, 'row2':float,
+           'conf1':float, 'conf2':float, 'sep':float, 'w1':float, 'w2':float}
+        where row1 < row2 (row1 -> edge_roi_1, row2 -> edge_roi_2).
+        """
+        x_lo, x_hi = self.resolve_lr_bounds(x_lo, x_hi)
+        prof = gaussian_filter1d(
+            self.compute_signed_edge_profile(x_lo_frac, x_hi_frac, x_lo=x_lo, x_hi=x_hi), 10)
+        n = len(prof)
+        if min_sep is None:
+            min_sep = max(5, int(n * 0.03))
+        if max_sep is None:
+            max_sep = n
+
+        norm = np.max(np.abs(prof)) if n else 0.0
+        if norm <= 0:
+            return {'ok': False, 'reason': 'no gradient'}
+        p = prof / norm
+
+        pos_peaks, pos_props = find_peaks(p, height=min_conf, width=3)   # rising -> upper edge
+        neg_peaks, neg_props = find_peaks(-p, height=min_conf, width=3)  # falling -> lower edge
+        if len(pos_peaks) == 0 or len(neg_peaks) == 0:
+            return {'ok': False, 'reason': 'edge not found'}
+
+        best = None
+        for pi, pr in enumerate(pos_peaks):
+            for ni, nr in enumerate(neg_peaks):
+                if nr <= pr:
+                    continue
+                sep = nr - pr
+                if sep < min_sep or sep > max_sep:
+                    continue
+                conf = pos_props['peak_heights'][pi] + neg_props['peak_heights'][ni]
+                if best is None or conf > best[0]:
+                    best = (conf, pr, nr,
+                            pos_props['peak_heights'][pi], neg_props['peak_heights'][ni],
+                            pos_props['widths'][pi], neg_props['widths'][ni])
+
+        if best is None:
+            return {'ok': False, 'reason': 'separation implausible'}
+
+        _, row1, row2, conf1, conf2, w1, w2 = best
+        return {'ok': True, 'reason': '',
+                'row1': float(row1), 'row2': float(row2),
+                'conf1': float(conf1), 'conf2': float(conf2),
+                'sep': float(row2 - row1), 'w1': float(w1), 'w2': float(w2)}
+
+    def estimate_lr_edges(self, row_lo, row_hi, frac=0.5):
+        """Estimate the sample's left/right columns from the horizontal
+        absorbance profile between the two detected top/bottom edge rows.
+
+        In the absorbance image the sample is a bright band, so over the rows
+        between its top and bottom edges the columns where the sample sits are
+        brighter than the surrounding background. We take the mean absorbance
+        per column across that vertical band and pick left/right where the
+        smoothed profile crosses ``frac`` of the way from its background (min)
+        to its peak (max). Falls back to the central 0.25/0.75 columns when the
+        profile is flat/unusable.
+
+        Returns [x_left, x_right] in binned absorbance-image columns.
+        """
+        W = self.image.shape[1]
+        default = [int(W * 0.25), int(W * 0.75)]
+        try:
+            r0 = int(max(0, min(row_lo, row_hi)))
+            r1 = int(min(self.image.shape[0], max(row_lo, row_hi)))
+            if r1 - r0 < 1:
+                return default
+            prof = self.image[r0:r1, :].mean(axis=0)
+            prof = gaussian_filter1d(prof, max(1, int(W * 0.02)))
+            lo, hi = float(prof.min()), float(prof.max())
+            if hi - lo <= 0:
+                return default
+            thr = lo + frac * (hi - lo)
+            above = np.where(prof > thr)[0]
+            if above.size < 2:
+                return default
+            x_left, x_right = int(above[0]), int(above[-1])
+            if x_right - x_left < max(2, int(W * 0.05)):
+                return default
+            return [x_left, x_right]
+        except Exception:
+            return default
+
+    def edge_geometries(self, sel, x_pos=0, x_width=None, band_half_height=None):
+        """Turn a select_edges() result into two (pos, size) rectangles in
+        absorbance-image coords, ordered [edge_roi_1 (upper), edge_roi_2 (lower)].
+
+        If band_half_height is None the band height is derived from the detected
+        peak width (matching the old auto-placement of width+80); otherwise the
+        supplied half-height (from the one-time setup) is used for both edges.
+        """
+        if x_width is None:
+            x_width = self.image.shape[1]
+        geoms = []
+        for row, w in [(sel['row1'], sel.get('w1', 20)), (sel['row2'], sel.get('w2', 20))]:
+            half = band_half_height if band_half_height is not None else (w / 2.0 + 40)
+            geoms.append(((x_pos, row - half), (x_width, 2 * half)))
+        return geoms
+
+    def build_edge_rois(self, geoms, edge_types):
+        """Build self.rois from geometry by slicing self.image directly (no
+        pyqtgraph widget needed).  Used by the headless batch path.  Clamps
+        each rectangle to the image bounds and stores pos/size for
+        compute_distance's x-range.
+        """
+        self.rois = []
+        H, W = self.image.shape
+        for i, (pos, size) in enumerate(geoms):
+            x0 = max(0, min(int(round(pos[0])), W - 1))
+            y0 = max(0, min(int(round(pos[1])), H - 1))
+            x1 = max(x0 + 1, min(int(round(pos[0] + size[0])), W))
+            y1 = max(y0 + 1, min(int(round(pos[1] + size[1])), H))
+            selected = self.image[y0:y1, x0:x1]
+            self.add_ROI(selected, (x0, y0), (x1 - x0, y1 - y0))
+            self.rois[-1].edge_type = edge_types[i] if i < len(edge_types) else 0
+        return self.rois
+
+    def compute_distance(self, orders=None, thresholds=None, n_samples=50):
+        """Fit both edge ROIs and return the vertical distance between them.
+
+        This is the single source of truth for the length measurement, factored
+        out of the controller so batch and interactive share it.  Returns a dict
+        with the scalar results plus the arrays needed to draw the interactive
+        overlays.
+        """
+        if orders is None:
+            orders = self.settings['edge_polynomial_order']
+        if thresholds is None:
+            thresholds = self.settings['edge_fit_threshold']
+
+        masked_imgs = []
+        fits = []
+        for i, roi in enumerate(self.rois):
+            masked_img, x_fit, y_fit = roi.compute(threshold=thresholds[i], order=orders[i])
+            masked_imgs.append(masked_img)
+            fits.append((x_fit, y_fit))
+
+        x_extents = []
+        for roi in self.rois:
+            x0 = roi.pos[0]
+            w = roi.size[0]
+            x_extents.append((x0, x0 + w))
+        min_x = min(e[0] for e in x_extents)
+        max_x = max(e[1] for e in x_extents)
+        x_test = np.linspace(min_x, max_x, n_samples)
+
+        edge1_y = self.rois[0].predict(x_test - self.rois[0].pos[0], orders[0]) + self.rois[0].pos[1]
+        edge2_y = self.rois[1].predict(x_test - self.rois[1].pos[0], orders[1]) + self.rois[1].pos[1]
+
+        y_diff = abs(np.mean(edge2_y - edge1_y))
+        std_dev = np.std(edge2_y - edge1_y)
+        y_0 = self.settings['crop_limits'][0][1]
+
+        return {'y_diff': y_diff, 'std_dev': std_dev,
+                'edge1_mean': np.mean(edge1_y) + y_0,
+                'edge2_mean': np.mean(edge2_y) + y_0,
+                'x_test': x_test, 'edge1_y': edge1_y, 'edge2_y': edge2_y,
+                'masked': masked_imgs, 'fits': fits}
+
+    def process_file(self, fname, crop_limits, edge_types, orders, thresholds,
+                     band_half_height, edge_x_pos, edge_x_width, min_sep, max_sep,
+                     std_dev_abs=5.0, std_dev_frac=0.15, weak_conf=0.3, min_conf=0.2,
+                     lr_limits=None):
+        """Headless full-pipeline measurement of one image for batch processing.
+
+        Reuses the one-time setup (crop box, sample type, order, threshold, edge
+        band size) but re-detects the edges per image (sample position can jump).
+        Never raises: a bad frame returns a result flagged 'LOW' with a reason so
+        the batch keeps running.  Interactive model state is snapshotted and
+        restored so the on-screen image/ROIs are untouched afterwards.
+        """
+        snap = (self.src, self.cropped, self.cropped_resized, self.image,
+                self.rois, self.filename, list(self.settings['crop_limits']))
+        result = {'mean': '', 'std.dev': '', 'edge1': '', 'edge2': '',
+                  'flag': 'LOW', 'reason': ''}
+        try:
+            self.load_file(fname)
+            H, W = self.src.shape
+            (cx, cy), (cw, ch) = crop_limits
+            if cw <= 0 or ch <= 0 or cx < 0 or cy < 0 or cx + cw > W or cy + ch > H:
+                result['reason'] = 'crop out of bounds'
+                return result
+
+            self.settings['crop_limits'] = crop_limits
+            self.crop()
+            self.filter_image()
+
+            # Horizontal fit window from the left/right guides (same window the
+            # user set interactively); falls back to the given edge x-extent.
+            x_lo = x_hi = None
+            if lr_limits and len(lr_limits) == 2 and lr_limits[1] > lr_limits[0]:
+                x_lo, x_hi = int(lr_limits[0]), int(lr_limits[1])
+                edge_x_pos, edge_x_width = x_lo, max(1, x_hi - x_lo)
+
+            sel = self.select_edges(band_half_height=band_half_height,
+                                    min_sep=min_sep, max_sep=max_sep, min_conf=min_conf,
+                                    x_lo=x_lo, x_hi=x_hi)
+            if not sel.get('ok'):
+                result['reason'] = sel.get('reason', 'edge not found')
+                return result
+
+            geoms = self.edge_geometries(sel, x_pos=edge_x_pos, x_width=edge_x_width,
+                                         band_half_height=band_half_height)
+            self.build_edge_rois(geoms, edge_types)
+            res = self.compute_distance(orders=orders, thresholds=thresholds)
+
+            y_diff = res['y_diff']
+            std_dev = res['std_dev']
+            result['mean'] = str(round(y_diff, 1))
+            result['std.dev'] = str(round(std_dev, 1))
+            result['edge1'] = str(round(res['edge1_mean'], 1))
+            result['edge2'] = str(round(res['edge2_mean'], 1))
+
+            reasons = []
+            if std_dev > max(std_dev_abs, std_dev_frac * y_diff):
+                reasons.append('fit unstable')
+            if sel['conf1'] < weak_conf or sel['conf2'] < weak_conf:
+                reasons.append('weak contrast')
+            result['flag'] = 'LOW' if reasons else 'OK'
+            result['reason'] = '; '.join(reasons)
+        except Exception as e:
+            result['flag'] = 'LOW'
+            result['reason'] = 'processing error: %s' % e
+        finally:
+            (self.src, self.cropped, self.cropped_resized, self.image,
+             self.rois, self.filename, self.settings['crop_limits']) = snap
+        return result
+
     def save_result(self, filename):
-        
+
         data = {'edges':[]}
         if filename.endswith('.json'):
             with open(filename, 'w') as json_file:
