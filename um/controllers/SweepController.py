@@ -50,6 +50,12 @@ class SweepController(pvController):
         state = data[0]
         if state:
 
+            if self.repeat_is_running():
+                # a scan and a repeat collection would both drive the scope and the
+                # save channel; refuse rather than interleave them
+                self.model.pvs['scan_go'].set(False)
+                return
+
             #temperary code to clear the waterfall plot before scanning
             #replace with better handling of growing waterfall data in the future
             waterfall_clear_pv = self.pv_server.get_pv('Waterfall:clear')
@@ -58,6 +64,12 @@ class SweepController(pvController):
         else:
             self.model.stop_scan()
             self.scanDoneSignal.emit()
+
+    def repeat_is_running(self):
+        try:
+            return bool(self.pv_server.get_pv('Repeat:run_state')._val)
+        except KeyError:
+            return False
 
     def start_sweep(self):
         # here we do the setpoint sweep

@@ -36,6 +36,7 @@ class UltrasoundWidget(QMainWindow):
         self._layout.setSpacing(0)
 
         self.control_panels = []
+        self.panel_registry = {}
 
         self.controls_sidebar = QtWidgets.QWidget()
         self.controls_sidebar.setMinimumWidth(280)
@@ -43,6 +44,7 @@ class UltrasoundWidget(QMainWindow):
         self.controls_layout = QtWidgets.QVBoxLayout()
         self.controls_layout.setContentsMargins(1, 1, 1, 1)
         self.controls_layout.setSpacing(15)
+        self.controls_layout.addWidget(self.create_standard_selector())
         self.controls_grid_layout= QtWidgets.QVBoxLayout()
         self.grid_rows = 0
         self.controls_layout.addLayout(self.controls_grid_layout)
@@ -182,14 +184,58 @@ class UltrasoundWidget(QMainWindow):
         self.panelClosedSignal.emit()
         time.sleep(0.2)
 
+    def create_standard_selector(self):
+        '''
+        Row of mutually exclusive buttons that picks the measurement Standard.
+        Populated by StandardsController; the widget is hidden until then.
+        '''
+        from um.models.StandardDefinitions import STANDARDS, STANDARD_ORDER
+
+        self.standard_widget = QtWidgets.QWidget()
+        self.standard_widget.setObjectName('standard_widget')
+        self._standard_layout = QtWidgets.QHBoxLayout()
+        self._standard_layout.setContentsMargins(4, 4, 4, 0)
+        self._standard_layout.setSpacing(3)
+
+        self.standard_btn_group = QtWidgets.QButtonGroup()
+        self.standard_btns = {}
+        for name in STANDARD_ORDER:
+            btn = CheckableFlatButton(STANDARDS[name]['title'])
+            btn.setObjectName('standard_btn')
+            btn.setToolTip(STANDARDS[name]['tooltip'])
+            self.standard_btn_group.addButton(btn)
+            self._standard_layout.addWidget(btn)
+            self.standard_btns[name] = btn
+
+        self.standard_widget.setLayout(self._standard_layout)
+        return self.standard_widget
+
+    def register_panel(self, name, panel, side='left'):
+        '''
+        Insert a panel once and remember it by name so a Standard can show or hide it.
+        Panels are hidden rather than removed: a closed Panel emits panelClosedSignal,
+        which tears down the owning instrument model.
+        '''
+        self.panel_registry[name] = panel
+        if side == 'right':
+            self.insert_panel_right(panel)
+        else:
+            self.insert_panel(panel)
+
+    def show_panels(self, names):
+        '''Show exactly the named panels; hidden widgets drop out of the layout.'''
+        names = set(names)
+        for name, panel in self.panel_registry.items():
+            panel.setVisible(name in names)
+
     def insert_panel(self, panel):
-        
+
         self.control_panels.append(panel)
         self.controls_grid_layout.addWidget(panel,self.grid_rows)
         self.grid_rows +=1
 
     def insert_panel_right(self, panel):
-        
+
         self.control_panels.append(panel)
         self.controls_grid_layout_right.addWidget(panel,self.grid_rows_right)
         self.grid_rows_right +=1
@@ -244,7 +290,10 @@ class UltrasoundWidget(QMainWindow):
         self.afg_mode_btn.setMinimumHeight(mode_btn_height)
         self.scan_mode_btn.setMinimumHeight(mode_btn_height)
 
-        
+        for btn in self.standard_btns.values():
+            btn.setMinimumHeight(26)
+
+
         self.setStyleSheet("""
             #scope_waveform_widget FlatButton {
                 min-width: 70;

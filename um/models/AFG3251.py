@@ -19,7 +19,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 import queue 
 from functools import partial
-from um.models.tek_fileIO import read_file_TEKAFG3000, waveform_to_AFG3251_binary
+from um.models.tek_fileIO import read_file_TEKAFG3000, waveform_to_AFG3251_binary, read_afg_waveform_file
 import json
 from um.models.pv_model import pvModel
 
@@ -50,7 +50,8 @@ class AFG_AFG3251(Afg, pvModel):
         self.function_shapes = ['sinusoid', 'square', 'pulse', 'ramp', 'prnoise', 'dc', 'sinc', 
                                 'gaussian', 'lorentz', 'erise', 'edecay', 'haversine', 'user1', 
                                 'user2', 'user3', 'user4', 'ememory', 'efile']
-        self.operating_modes = ['continuous','burst n-cycles'] 
+        self.operating_modes = ['continuous','burst n-cycles']
+        self.memory_slots = ['user1', 'user2', 'user3', 'user4', 'ememory']
         
         # Task description markup. Aarbitrary default values ('val') are for type recognition in panel widget constructor
         # supported types are float, int, bool, string, and list of strings
@@ -80,8 +81,22 @@ class AFG_AFG3251(Afg, pvModel):
                                 {'desc': 'User waveform 1', 'val':{}, 
                                 'param':{'type':'dict'}},
                         'user1_waveform_from_file':
-                                {'desc': 'Waveform file', 'val':'', 
+                                {'desc': 'Waveform file', 'val':'',
                                 'param':{'type':'s'}},
+                        'user1_waveform_sample_rate':
+                                {'desc': 'File sample rate', 'unit':'MS/s', 'val':250e6,
+                                'val_scale':1e6, 'min':1e3, 'max':2e9, 'increment':1,
+                                'param':{'type':'f'}},
+                        'upload_slot':
+                                {'desc': 'Upload to', 'val':self.memory_slots[0],
+                                'list':self.memory_slots,
+                                'param':{'type':'l'}},
+                        'upload_frequency_override':
+                                # 0 keeps the historical behaviour of deriving the record
+                                # frequency from the waveform's own time axis
+                                {'desc': 'Upload freq override', 'unit':'Hz', 'val':0.0,
+                                'min':0, 'max':1000e6, 'increment':1,
+                                'param':{'type':'f'}},
                         'upload_user1_waveform':     
                                 {'desc': 'Upload waveform;Go','val':False, 
                                 'param':{'type':'b'}},
@@ -132,58 +147,68 @@ class AFG_AFG3251(Afg, pvModel):
         if param:
             waveform = self.pvs['user1_waveform']._val
 
-            if len(waveform):
-                
+            if waveform is not None and len(waveform):
+                if not ('t' in waveform and 'waveform' in waveform):
+                    # a malformed waveform dict used to raise here and kill this thread
+                    print('AFG upload skipped: waveform dict has no "t"/"waveform" keys')
+                    self.pvs['upload_user1_waveform'].set(False)
+                    return
+
                 t = waveform['t']
-                
+
                 y = waveform['waveform']
 
                 freq, binary_waveform = waveform_to_AFG3251_binary(t, y)
-                
+
+                override = self.pvs['upload_frequency_override']._val
+                if override:
+                    freq = override
+
+                slot = self.pvs['upload_slot']._val
+
                 if self.connected:
-                    slot='user1'
                     #We can write the waveform data to the AFG after making sure its in big endian format
                     self.write_binary_values('TRACE:DATA EMEMory,', binary_waveform)
-                    #'copies' the Editable Memory to User1 memory location. note: there are 4 user memory locations
-                    self.write('data:copy ' +slot+', ememory')
+                    if slot != 'ememory':
+                        #'copies' the Editable Memory to the target user memory location
+                        self.write('data:copy ' +slot+', ememory')
 
-                self.pvs['function_shape'].set('user1')
-                #print('set function_shape to user1')
+                self.pvs['function_shape'].set(slot)
+                #print('set function_shape to ' + slot)
                 self.pvs['frequency'].set(float(freq))
 
             self.pvs['upload_user1_waveform'].set(False)
-            
+
                 #self.write('source1:function '+slot) #sets the AFG source to user1 memory
 
         
 
 
     def _set_user1_waveform(self, waveform):
-        
+
         self.pvs['user1_waveform']._val = waveform
         autoupload = self.pvs['auto_upload_user1_waveform']._val
         if autoupload:
-            if len(waveform):
+            if waveform is not None and len(waveform):
                 self.pvs['upload_user1_waveform'].set(True)
 
         #print('_set_user1_waveform')
     
     def _set_user1_waveform_from_file(self, filename):
-        current_file = self.pvs['user1_waveform_from_file']._val
-        if current_file != filename:
-            if len(filename):
-                if os.path.exists(filename):
-                    waveform = self.read_file(filename)
-                    if 'binary_waveform' in waveform:
-                        self._set_user1_waveform(waveform)
-                        
+        self.pvs['user1_waveform_from_file']._val = filename
+        if len(filename) and os.path.exists(filename):
+            waveform = self.read_file(filename)
+            if waveform is not None:
+                self._set_user1_waveform(waveform)
+
     def _get_user1_waveform_from_file(self):
         return self.pvs['user1_waveform_from_file']._val
 
     def read_file(self, filename='3pulse.tfw'):
-        #Filename for TFW to be read in from the PC
-        waveform = read_file_TEKAFG3000(filename)
-        return waveform
+        # .tfw (TEKAFG3000) and ArbExpress .wfm; .tfw carries no clock, so the
+        # sample rate pv supplies it
+        sample_rate = self.pvs['user1_waveform_sample_rate']._val
+        return read_afg_waveform_file(filename, sample_rate)
 
     def _set_frequency(self, freq):
         #time.sleep(.2)

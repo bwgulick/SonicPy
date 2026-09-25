@@ -35,11 +35,16 @@ class ArbFilterModel(Scope, pvModel):
                         'waveform_out':     
                                 {'desc': 'Waveform out', 'val':None, 
                                 'param':{ 'type':'dict'}},
-                        'filter_params':     
-                                {'desc': 'Window parameters', 'val':None, 
+                        'filter_params':
+                                {'desc': 'Window parameters', 'val':None,
+                                'param':{ 'type':'dict'}},
+                        'waveform_sink':
+                                # dead-end target for 'user1_channel' in the Standards that
+                                # must not let the generator chain reach the AFG
+                                {'desc': 'Waveform sink', 'val':None,
                                 'param':{ 'type':'dict'}}
-                                
-                      }       
+
+                      }
 
         
         self.create_pvs(self.tasks)

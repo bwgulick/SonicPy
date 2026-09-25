@@ -51,6 +51,8 @@ class AFGPlotController(QObject):
         
     def user1_waveform_changed_callback(self, pv_name, data):
         waveform = data[0]
+        if not waveform or 't' not in waveform or 'waveform' not in waveform:
+            return
         self.update_plot([waveform['t'],waveform['waveform']])
 
     def getRange(self):

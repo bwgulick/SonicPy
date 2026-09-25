@@ -20,6 +20,10 @@ from um.controllers.ScopeController import ScopeController
 from um.controllers.ScopePlotController import ScopePlotController
 from um.controllers.ArbController import ArbController
 from um.controllers.ArbFilterController import ArbFilterController
+from um.controllers.SBUWaveformController import SBUWaveformController
+from um.controllers.CustomWaveformController import CustomWaveformController
+from um.controllers.RepeatController import RepeatController
+from um.controllers.StandardsController import StandardsController
 from um.controllers.SaveDataController import SaveDataController
 from um.controllers.WaterfallController import WaterfallController
 from um.controllers.WaterfallPlotController import WaterfallPlotController
@@ -38,6 +42,7 @@ import utilities.hpMCAutilities as mcaUtil
 from utilities.HelperModule import increment_filename, increment_filename_extra
 
 from .. import style_path
+from .. import devices_path
 
 from um.models.pvServer import pvServer
 from um.widgets.panel import Panel
@@ -47,7 +52,7 @@ from um.widgets.panel import Panel
 ############################################################
 
 class UltrasoundController(QObject):
-    def __init__(self, app, _platform, theme, scope_offline = True, scope_model='DPO', scope_hostname='169', afg_offline=True, afg_model='AFG', afg_hostname='202'):
+    def __init__(self, app, _platform, theme, scope_offline = True, scope_model='DPO', scope_hostname='169', afg_offline=True, afg_model='AFG', afg_hostname='202', measurement_standard='HPCAT'):
         super().__init__()
     
         self.scope_file_options_file='scope_file_settings.json'
@@ -67,8 +72,13 @@ class UltrasoundController(QObject):
         self.arb_controller = ArbController(self)
         self.arb_filter_controller = ArbFilterController(self)
         self.afg_controller = AFGController(self, arb_controller = self.arb_controller, arb_filter_controller= self.arb_filter_controller,  offline = afg_offline, visa_hostname = afg_hostname)
-        
+
+        # alternative waveform sources, one per non-HPCAT Standard
+        self.sbu_waveform_controller = SBUWaveformController(self)
+        self.custom_waveform_controller = CustomWaveformController(self)
+
         self.save_data_controller = SaveDataController(self)
+        self.repeat_controller = RepeatController(self)
         self.scan_pv = self.arb_controller.scan_pv
         
         self.scope_controller = ScopeController(self, offline = scope_offline, scope_model=scope_model, visa_hostname = scope_hostname)
@@ -100,19 +110,30 @@ class UltrasoundController(QObject):
         arb_filter_panel = self.arb_filter_controller.get_panel()
         save_data_panel = self.save_data_controller.get_panel()
 
-        arb_and_filter_panel = Panel('USER1 waveform', 
+        sbu_panel = self.sbu_waveform_controller.get_panel()
+        custom_panel = self.custom_waveform_controller.get_panel()
+        repeat_panel = self.repeat_controller.get_panel()
+
+        arb_and_filter_panel = Panel('USER1 waveform',
                                         ['ArbModel:selected_item',
                                         'ArbModel:edit_state',
                                         'ArbFilter:selected_item',
                                         'ArbFilter:edit_state'])
 
-        self.display_window.insert_panel(scope_panel)
-        self.display_window.insert_panel(afg_panel)
-        #self.display_window.insert_panel(arb_panel)
-        #self.display_window.insert_panel(arb_filter_panel)
-        self.display_window.insert_panel(arb_and_filter_panel)
-        self.display_window.insert_panel_right(sweep_panel)
-        self.display_window.insert_panel_right(save_data_panel)
+        # every panel is inserted once, in this fixed order; the selected Standard
+        # decides which of them are visible (see StandardDefinitions.STANDARDS)
+        self.display_window.register_panel('scope', scope_panel, 'left')
+        self.display_window.register_panel('afg', afg_panel, 'left')
+        self.display_window.register_panel('arb_and_filter', arb_and_filter_panel, 'left')
+        self.display_window.register_panel('sbu_pulse', sbu_panel, 'left')
+        self.display_window.register_panel('custom_waveform', custom_panel, 'left')
+        self.display_window.register_panel('scan', sweep_panel, 'right')
+        self.display_window.register_panel('repeat', repeat_panel, 'right')
+        self.display_window.register_panel('save_data', save_data_panel, 'right')
+
+        self.standards_controller = StandardsController(
+                self, self.display_window, initial=measurement_standard,
+                settings_file=os.path.join(devices_path, 'standard.txt'))
 
 
         self.display_window.panelClosedSignal.connect(self.panel_closed_callback)
@@ -125,10 +146,14 @@ class UltrasoundController(QObject):
 
         self.pv_server = pvServer()
 
-        # for some reason this helps resize the plots in the frames properly 
+        # for some reason this helps resize the plots in the frames properly
         self.display_window.afg_mode_btn.setChecked(True)
         self.display_window.scan_mode_btn.setChecked(True)
         self.display_window.scope_mode_btn.setChecked(True)
+
+        # last: every model and panel now exists, so the Standard's pv writes can all
+        # resolve, and any non-HPCAT disarming lands before the user can touch anything
+        self.standards_controller.apply_initial()
 
         
 
@@ -142,6 +167,8 @@ class UltrasoundController(QObject):
 
         self.sweep_controller.scanStartRequestSignal.connect(self.scanStartRequestCallback)
         self.sweep_controller.scanDoneSignal.connect(self.scanDoneCallback)
+        self.repeat_controller.repeatStartedSignal.connect(self.repeatStartedCallback)
+        self.repeat_controller.repeatDoneSignal.connect(self.repeatDoneCallback)
         self.scope_controller.model.pvs['run_state'].value_changed_signal.connect(self.scopeStoppedCallback)
         self.display_window.actionPreferences.triggered.connect(self.preferences_module)
         self.display_window.actionSave_As.triggered.connect(self.scopeSaveAsCallback)
@@ -201,6 +228,10 @@ class UltrasoundController(QObject):
         running  = data[0]
         if not running:
             #print('stopped')
+            if self.repeat_controller.is_running():
+                # the repeat loop saves each collection itself; autosaving here too
+                # would write every waveform twice
+                return
             if self.file_options.autosave:
                 self.save_data_controller.model.pvs['save'].set(True)
                 
@@ -217,6 +248,12 @@ class UltrasoundController(QObject):
         #print('ending frequency sweep!')
         self.controls_setEnable(True)
 
+    def repeatStartedCallback(self):
+        self.controls_setEnable(False)
+
+    def repeatDoneCallback(self):
+        self.controls_setEnable(True)
+
     def controls_setEnable(self, state):
         self.afg_controller.panelSetEnabled(state)
         self.scope_controller.panelSetEnabled(state)
@@ -228,6 +265,10 @@ class UltrasoundController(QObject):
         self.sweep_controller.exit()
         self.arb_controller.exit()
         self.arb_filter_controller.exit()
+        self.sbu_waveform_controller.exit()
+        self.custom_waveform_controller.exit()
+        self.repeat_controller.exit()
+        self.standards_controller.exit()
         self.overlay_controller.overlay_widget.close()
         self.save_data_controller.exit()
 

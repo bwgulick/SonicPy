@@ -57,6 +57,14 @@ else:
     afg_hostname = '202'
     afg_offline = True
 
+# measurement Standard (HPCAT / SBU / Custom); rewritten when the user switches
+standard_settings_file = os.path.normpath(os.path.join(devices_path,'standard.txt'))
+if os.path.exists(standard_settings_file):
+    with open(standard_settings_file, 'r') as file:
+        measurement_standard = file.readline().strip()
+else:
+    measurement_standard = 'HPCAT'
+
 def main():
     from um.controllers.UltrasoundController import UltrasoundController
     if hasattr(QtCore.Qt, 'AA_EnableHighDpiScaling'):
@@ -69,7 +77,7 @@ def main():
     Theme = 1
     app = QtWidgets.QApplication([])
     #app.aboutToQuit.connect(app.deleteLater)
-    controller = UltrasoundController(app, _platform, Theme, scope_offline, scope_model, scope_hostname, afg_offline, afg_model, afg_hostname)
+    controller = UltrasoundController(app, _platform, Theme, scope_offline, scope_model, scope_hostname, afg_offline, afg_model, afg_hostname, measurement_standard)
     controller.show_window()
 
     if _platform == "Darwin":    #macOs has a 'special' way of handling preferences menu

@@ -331,12 +331,17 @@ class pvModel(QThread):
                         pv = self.pvs[task_name]
                         if mode == 'set':
                             param = task['param']
-                            
+
                             # param must be validated prior to here !
-                            
-                            func(param)
-                            
-                            #print('set failed: '+task_name)
+
+                            try:
+                                func(param)
+                            except Exception as e:
+                                # a raising set handler used to escape this loop and kill the
+                                # model thread for good, leaving the panel silently dead
+                                print('set failed: ' + self.instrument + ':' + task_name +
+                                      ' (' + type(e).__name__ + ': ' + str(e) + ')')
+
                             param_new = param == pv._val
                             pv._val = param
                             

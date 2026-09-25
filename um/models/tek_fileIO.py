@@ -257,6 +257,119 @@ def read_file_TEKAFG3000( filename=''):
         except:
             return None
 
+def tfw_to_waveform(desc, sample_rate):
+    '''
+    Convert the dict returned by read_file_TEKAFG3000 into the {'t','waveform'} form the
+    AFG upload path expects. TFW stores 14-bit DAC codes (0..16383) and carries no clock,
+    so the sample rate has to be supplied by the caller.
+
+    sample_rate: samples per second
+    '''
+    codes = np.asarray(desc['binary_waveform'], dtype=float)
+    npts = len(codes)
+    if npts < 2:
+        return None
+    mid = (codes.max() + codes.min()) / 2
+    y = codes - mid
+    peak = np.max(np.abs(y))
+    if peak > 0:
+        y = y / peak
+    t = np.arange(npts) / float(sample_rate)
+    return {'t': t, 'waveform': y, 'points': npts, 'clock': float(sample_rate)}
+
+
+def read_arbexpress_wfm(filename, sample_rate=None):
+    '''
+    Reader for Tektronix ArbExpress / AWG .wfm files:
+
+        MAGIC 1000\\r\\n  #<ndigits><nbytes>  <payload>  CLOCK <rate>\\n
+
+    MAGIC 1000 payload is 5 bytes per point: little-endian float32 sample followed by a
+    one-byte marker. The trailing CLOCK record gives the sample rate the waveform was
+    authored for; sample_rate overrides it when given.
+
+    returns {'t','waveform','points','clock'} or None
+    '''
+    try:
+        with open(filename, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return None
+
+    if not data.startswith(b'MAGIC'):
+        return None
+    magic = data[:data.index(b'\n')].strip().decode('ascii', 'replace')
+    if '1000' not in magic:
+        # MAGIC 2000 (integer) and friends are not handled - fail loudly rather than
+        # decoding the payload with the wrong record size
+        print('Unsupported ArbExpress waveform type: ' + magic + ' (only MAGIC 1000 is read)')
+        return None
+
+    try:
+        hash_at = data.index(b'#')
+        ndigits = int(chr(data[hash_at + 1]))
+        nbytes = int(data[hash_at + 2:hash_at + 2 + ndigits])
+        start = hash_at + 2 + ndigits
+    except (ValueError, IndexError):
+        return None
+
+    payload = data[start:start + nbytes]
+    if len(payload) != nbytes or nbytes % 5:
+        print('Malformed ArbExpress payload in ' + os.path.split(filename)[-1])
+        return None
+
+    records = np.frombuffer(payload, dtype=np.uint8).reshape(-1, 5)
+    y = records[:, :4].copy().view('<f4').ravel().astype(float)
+    npts = len(y)
+    if npts < 2:
+        return None
+
+    clock = None
+    tail = data[start + nbytes:].decode('ascii', 'replace')
+    if 'CLOCK' in tail:
+        try:
+            clock = float(tail.split('CLOCK')[1].split()[0])
+        except (IndexError, ValueError):
+            clock = None
+    if sample_rate is not None:
+        clock = float(sample_rate)
+    if clock is None or clock <= 0:
+        return None
+
+    return {'t': np.arange(npts) / clock, 'waveform': y, 'points': npts, 'clock': clock}
+
+
+def read_afg_waveform_file(filename, sample_rate=None):
+    '''
+    Dispatcher for waveform files destined for the AFG arbitrary memory.
+    Recognises TEKAFG3000 .tfw and ArbExpress MAGIC 1000 .wfm.
+
+    sample_rate (samples per second) is required for .tfw, which stores no clock, and
+    overrides the stored CLOCK for .wfm.
+
+    returns {'t','waveform','points','clock'} or None
+    '''
+    if not filename or not os.path.isfile(filename):
+        return None
+    try:
+        with open(filename, 'rb') as f:
+            head = f.read(16)
+    except OSError:
+        return None
+
+    if head.startswith(b'TEKAFG3000'):
+        desc = read_file_TEKAFG3000(filename)
+        if desc is None or 'binary_waveform' not in desc:
+            return None
+        if sample_rate is None:
+            return None
+        return tfw_to_waveform(desc, sample_rate)
+    if head.startswith(b'MAGIC'):
+        return read_arbexpress_wfm(filename, sample_rate)
+    print('Unrecognised waveform file: ' + os.path.split(filename)[-1])
+    return None
+
+
 def waveform_to_AFG3251_binary(t, y):
     # max: 16382  (2^14-2)
     absmax = max(abs(min(y)), abs(max(y)))

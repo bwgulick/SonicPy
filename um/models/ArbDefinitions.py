@@ -37,7 +37,8 @@ class arb_model(pvModel):
         ## model speficic:
         self.offline = True
         self.instrument = arb_name
-        
+        self.autoprocess_connected = False
+
         # Task description markup. Aarbitrary default values ('val') are for type recognition in panel widget constructor
         # supported types are float, int, bool, string, and list of strings
         self.tasks = {  
@@ -70,10 +71,14 @@ class arb_model(pvModel):
     def _set_auto_process(self, val):
         self.pvs['auto_process']._val = val
         arb_vars = list(self.arb_variables.keys())
-        if val:
+        # only act on a real transition: connecting twice would double-fire and
+        # disconnecting when not connected raises TypeError, which used to kill the thread
+        if val and not self.autoprocess_connected:
             self.set_autoprocess_connections(arb_vars)
-        else:
+            self.autoprocess_connected = True
+        elif not val and self.autoprocess_connected:
             self.unset_autoprocess_connections(arb_vars)
+            self.autoprocess_connected = False
 
     def set_autoprocess_connections(self, pv_names):
         for pv in pv_names:
@@ -81,7 +86,10 @@ class arb_model(pvModel):
 
     def unset_autoprocess_connections(self, pv_names):
         for pv in pv_names:
-            self.pvs[pv].value_changed_signal.disconnect(self._apply)
+            try:
+                self.pvs[pv].value_changed_signal.disconnect(self._apply)
+            except TypeError:
+                pass
 
     def _apply(self):
         self.pvs['apply'].set(True)
