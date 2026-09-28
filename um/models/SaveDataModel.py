@@ -44,7 +44,7 @@ class SaveDataModel(pvModel):
                                 'param':{'type':'s'}},
                         'full_file_name':
                                 {'desc': 'FullFileName', 'val':'', 
-                                'param':{'type':'s'}, 'epics_PV_out':'16bmb:scope_file:FullFileName_RBV'},
+                                'param':{'type':'s'}, 'epics_PV_out':'16bmb:us:full_file_name'},
                         'file_filter':
                                 {'desc': 'Filename', 'val':'Text (*.csv);;Binary (*.npz)', 
                                 'param':{'type':'s'}},
@@ -75,7 +75,8 @@ class SaveDataModel(pvModel):
                                 {'desc': 'File system', 'val':'~', 
                                 'param':{'type':'s'}},
                         'subdirectory':
-                                {'desc': 'Subdirectory', 'val':'ultrasonic', 
+                                {'desc': 'Subdirectory', 'val':'ultrasonic',
+                                'epics_PV_in':'16bmb:us:subdirectory',
                                 'param':{'type':'s'}},
                         'base_name':
                                 {'desc': 'Base name', 'val':'us_', 
@@ -100,7 +101,7 @@ class SaveDataModel(pvModel):
                                 {'desc': 'Next file #', 'val':0,'min':0,'max':1e16,
                                 'param':{ 'type':'i'}},
                         'latest_event':
-                                {'desc': 'Status', 'val':'', 'epics_PV_out':'16bmb:scope_file:WriteMessage',
+                                {'desc': 'Status', 'val':'', 'epics_PV_out':'16bmb:us:latest_event',
                                 
                                 'methods':{'set':False, 'get':True},
                                 'param':{'type':'s'}},

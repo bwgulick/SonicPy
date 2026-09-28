@@ -9,10 +9,43 @@ from functools import partial
 import json
 from um.models.pvServer import pvServer
 
-#from .. import offline
+# ── EPICS bridge (SonicPy ↔ Bluesky) ────────────────────────────────────────────
+# Design A: SonicPy is a Channel-Access *client* of an external IOC (the sandbox
+# soft IOC `sonicpy_sim_ioc.py`, or the beamline production IOC). Tasks carry
+# `epics_PV_in` (an external PV SonicPy monitors → mirrors onto its internal PV) and
+# `epics_PV_out` (SonicPy caputs its internal value out to an external PV) tags.
+#
+# This is INDEPENDENT of the scope/afg VISA-offline flags: the whole point is to let
+# Bluesky drive SonicPy while the instruments run offline (noised anvil.csv). Toggle
+# the bridge with env SONICPY_EPICS_BRIDGE=0 (defaults on when pyepics imports).
+EPICS_BRIDGE_ENABLED = os.environ.get('SONICPY_EPICS_BRIDGE', '1') not in ('0', 'false', 'False', '')
+epics_PV = None
+if EPICS_BRIDGE_ENABLED:
+    try:
+        from epics import PV as epics_PV
+    except Exception as _e:
+        print('SonicPy EPICS bridge: pyepics unavailable (%s) - bridge disabled' % _e)
+        EPICS_BRIDGE_ENABLED = False
 
-'''if not offline:
-    from epics import PV as epics_PV'''
+
+def _value_changed(new, old):
+    """Array-safe scalar `new != old` for the bridge-out change gate.
+
+    A bare `new != old` raises "truth value of an array is ambiguous" when a PV
+    carries a numpy array (waveforms: DPO5104:waveform, AFG3251:user1_waveform,
+    …). Those PVs are never bridged (no epics_PV_out), but this stays robust if
+    one ever is. Returns a plain bool; on any comparison failure assume changed.
+    """
+    try:
+        import numpy as _np
+        if isinstance(new, _np.ndarray) or isinstance(old, _np.ndarray):
+            return not _np.array_equal(new, old)
+    except Exception:
+        pass
+    try:
+        return bool(new != old)
+    except Exception:
+        return True
 
 class PV(QObject):
     
@@ -66,53 +99,71 @@ class PV(QObject):
         else: self._unit = ''
 
         
-        '''if 'epics_PV_out' in settings and not offline:
-            try:
-                self._epics_PV_out_name = settings['epics_PV_out']  
-                self._epics_PV_out = epics_PV(self._epics_PV_out_name)
-                #print(self._epics_PV_out)
-            except:
-                self._epics_PV_out = None
-        else:
-            self._epics_PV_out = None'''
+        self._epics_PV_out = None
+        self._epics_PV_out_name = None
+        self._epics_PV_in = None
+        self._epics_PV_in_name = None
         self._epics_PV_in_monitor = None
         self._epics_monitor_on = False
+        if EPICS_BRIDGE_ENABLED and 'epics_PV_out' in settings:
+            try:
+                self._epics_PV_out_name = settings['epics_PV_out']
+                self._epics_PV_out = epics_PV(self._epics_PV_out_name)
+            except Exception:
+                self._epics_PV_out = None
 
     def __str__(self):
         return self._pv_name
     
 
     def connect_epics_monitor(self):
-        pass
+        # Arm a CA monitor on this PV's external `epics_PV_in`, if it has one, so an
+        # external IOC writing that PV mirrors onto our internal PV. No-op otherwise.
+        if not (EPICS_BRIDGE_ENABLED and isinstance(self.settings, dict)
+                and 'epics_PV_in' in self.settings):
+            return
+        try:
+            self._epics_PV_in_name = self.settings['epics_PV_in']
+            self._epics_PV_in = epics_PV(self._epics_PV_in_name)
+            self._epics_PV_in_monitor = epicsMonitor(
+                self._epics_PV_in, self.handle_epics_pv_callback, autostart=True)
+        except Exception:
+            self._epics_PV_in_monitor = None
 
-        '''if #'epics_PV_in' in self.settings and not offline:
-            try:
-                self._epics_PV_in_name = self.settings['epics_PV_in']  
-                self._epics_PV_in = epics_PV(self._epics_PV_in_name)
-
-                self._epics_PV_in_monitor = epicsMonitor(self._epics_PV_in, self.handle_epics_pv_callback, autostart=True)
-                #print(self._epics_PV_in)
-            except:
-                self._epics_PV_in_monitor=None'''
-
-
-    '''def handle_epics_pv_callback(self, Status):
-        if not offline:
-            if type(Status) == str:
-                if Status == '0' or Status == 'Done':
-                    Status = False
-                    
-                if Status == '1' or Status == 'Write':
-                    Status = True
-                    
-                g = self.__getattribute__('set')
-                if Status:
-                    g(Status)'''
+    def handle_epics_pv_callback(self, status):
+        # External IOC wrote our epics_PV_in — mirror it onto the internal PV.
+        # pyepics delivers char_value (a string); coerce command-style values and
+        # then cast to this PV's declared type so validate_params accepts it.
+        val = status
+        if isinstance(val, str):
+            if val in ('0', 'Done'):
+                val = False
+            elif val in ('1', 'Write'):
+                val = True
+            else:
+                t = getattr(self, '_type', str)
+                try:
+                    if t is int:
+                        val = int(float(val))
+                    elif t is float:
+                        val = float(val)
+                    elif t is bool:
+                        val = bool(float(val))
+                    else:
+                        val = t(val)
+                except Exception:
+                    return
+        setter = getattr(self, 'set', None)
+        if setter is not None:
+            setter(val)
 
         
 
     
-'''class epicsMonitor(QtCore.QObject):
+class epicsMonitor(QtCore.QObject):
+    # Marshals a pyepics CA-thread callback onto the Qt event loop via a signal, so
+    # the internal `.set()` (queue-based) is invoked from the Qt side, not the CA
+    # thread. char_value is a string; the consumer casts it to the PV's type.
     callback_triggered = QtCore.pyqtSignal(str)
 
     def __init__(self, pv, callback, debounce_time=None, autostart=False):
@@ -123,17 +174,18 @@ class PV(QObject):
         self.callback_triggered.connect(callback)
         if autostart:
             self.SetPVmonitor()
-            
+
     def SetPVmonitor(self):
         self.mcaPV.clear_callbacks()
         self.mcaPV.add_callback(self.onPVChange)
         self.monitor_On = True
+
     def unSetPVmonitor(self):
         self.mcaPV.clear_callbacks()
         self.monitor_On = False
 
     def onPVChange(self, pvname=None, char_value=None, **kws):
-        self.callback_triggered.emit(char_value)    '''
+        self.callback_triggered.emit(char_value)
 
 class pvModel(QThread):
 
@@ -205,7 +257,7 @@ class pvModel(QThread):
             
             task = tasks[tag]
             self.create_pv(tag, task)
-            #self.pvs[tag].connect_epics_monitor()
+            self.pvs[tag].connect_epics_monitor()
    
     def create_pv(self, tag, task):
         pv_name = self.instrument + ':'+tag
@@ -331,9 +383,10 @@ class pvModel(QThread):
                         pv = self.pvs[task_name]
                         if mode == 'set':
                             param = task['param']
-
+                            
                             # param must be validated prior to here !
-
+                            
+                            old_val = getattr(pv, '_val', None)
                             try:
                                 func(param)
                             except Exception as e:
@@ -341,31 +394,26 @@ class pvModel(QThread):
                                 # model thread for good, leaving the panel silently dead
                                 print('set failed: ' + self.instrument + ':' + task_name +
                                       ' (' + type(e).__name__ + ': ' + str(e) + ')')
-
-                            param_new = param == pv._val
                             pv._val = param
-                            
-                            '''if param_new:
-                                #print('set : '+task_name + ' '+ str(param))
-                                if pv._epics_PV_out is not None:
-                                    
-                                    e_param = param
+
+                            # Bridge OUT: mirror a genuine change to the external PV.
+                            # Gating on change (not the original inverted `==`) breaks
+                            # the echo loop for dual-tagged PVs like scan_go (in+out):
+                            # a re-armed in-monitor seeing our own put finds the value
+                            # unchanged and does not push again. The change test lives
+                            # INSIDE this branch (bridged PVs are always scalar/string)
+                            # so array-valued PVs never hit the ambiguous-truth compare.
+                            if pv._epics_PV_out is not None and _value_changed(param, old_val):
+                                try:
+                                    e_param = int(param) if isinstance(param, bool) else param
                                     if pv._epics_PV_in_monitor is not None:
                                         pv._epics_PV_in_monitor.unSetPVmonitor()
-                                    time.sleep(epics_wait)
-                                    if type(e_param) == bool:
-                                        e_param = str(int(e_param))
-                                    #print ('write to epics ' + e_param)
                                     pv._epics_PV_out.put(e_param)
-                                    time.sleep(epics_wait)
                                     if pv._epics_PV_in_monitor is not None:
-                                        pv._epics_PV_in_monitor.SetPVmonitor()'''
-                            '''except:
-                                        pass
-                                        if pv._epics_PV_out is not None:
-                                            print('could not put epics pv ' + pv._epics_PV_out_name)
-                                            #print(param)'''
-                            
+                                        pv._epics_PV_in_monitor.SetPVmonitor()
+                                except Exception:
+                                    print('could not put epics pv ' + str(pv._epics_PV_out_name))
+
                             pv.value_changed_signal.emit(task_name,[param])
                             #print('emit '+ str(task_name) + ', '+ str(param))
                             
@@ -382,10 +430,19 @@ class pvModel(QThread):
                                 if type(ans) is not dict:
                                     #print(ans)
                                     pass
+                                old_ans = getattr(pv, '_val', None)
                                 pv._val = ans
                                 pv.value_changed_signal.emit(task_name,[ans])
-                                '''if pv._epics_PV_out is not None:
-                                    pv._epics_PV_out.put(ans)'''
+                                # Bridge OUT: push readback changes to the external PV
+                                # (for status PVs refreshed via get rather than set).
+                                if pv._epics_PV_out is not None \
+                                        and not isinstance(ans, dict) \
+                                        and _value_changed(ans, old_ans):
+                                    try:
+                                        e_ans = int(ans) if isinstance(ans, bool) else ans
+                                        pv._epics_PV_out.put(e_ans)
+                                    except Exception:
+                                        print('could not put epics pv ' + str(pv._epics_PV_out_name))
                                 #self.get_queue.put(ans)
         #print('Exited thread')
 

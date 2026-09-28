@@ -29,6 +29,10 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
  
         self.horizontalHeaders = [''] * 9
         self.fnames = {}
+        # Normalized absolute paths the user has removed from the list. These are
+        # only hidden/skipped in this session (Process All, Save results, view) --
+        # the files are never touched on disk. Cleared when a new folder is opened.
+        self.excluded = set()
         self.fldr_path = ''
 
     def get_fnames(self):
@@ -61,6 +65,10 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
         lines.append(first_line)
 
         for fname in self.fnames:
+
+            # Skip files the user removed from the list.
+            if os.path.normpath(fname) in self.excluded:
+                continue
 
             result = self.fnames [fname] ['result']
 
@@ -103,6 +111,9 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
             file = os.path.normpath(f if os.path.isabs(f) else os.path.join(root, f))
             if root and os.path.normpath(os.path.dirname(file)) != root:
                 continue
+            # Skip files the user removed from the list.
+            if file in self.excluded:
+                continue
             f_out[f] = file
         return f_out
 
@@ -142,6 +153,7 @@ class YourSystemModel(QtWidgets.QFileSystemModel):
         # that aren't in the folder the user just selected.
         if os.path.normpath(path) != os.path.normpath(self.fldr_path or ''):
             self.fnames = {}
+            self.excluded = set()
         self.fldr_path = path
         # UniqueConnection avoids stacking duplicate slots (and a later
         # double-disconnect) if setRootPath is called more than once.
@@ -221,6 +233,19 @@ class FileViewWidget(QtWidgets.QWidget):
         btn_layout.addSpacerItem(HorizontalSpacerItem())
         self.hlay.addLayout(btn_layout)
 
+        # Remove/restore selected files from the list (view only -- files on
+        # disk are never touched). Ctrl+click / Shift+click selects several.
+        rm_layout = QtWidgets.QHBoxLayout()
+        self.remove_btn = QtWidgets.QPushButton('Remove selected')
+        self.remove_btn.setToolTip('Remove the selected file(s) from this list '
+                                   '(does not delete them from disk). Shortcut: Delete')
+        rm_layout.addWidget(self.remove_btn)
+        self.restore_btn = QtWidgets.QPushButton('Restore all')
+        self.restore_btn.setToolTip('Show all removed files again')
+        rm_layout.addWidget(self.restore_btn)
+        rm_layout.addSpacerItem(HorizontalSpacerItem())
+        self.hlay.addLayout(rm_layout)
+
         self.folder_lbl = EliderLabel(mode=QtCore.Qt.ElideLeft)
         self.folder_lbl.setMaximumHeight(20)
 
@@ -231,7 +256,9 @@ class FileViewWidget(QtWidgets.QWidget):
         self.listview.setColumnHidden(1, True)
         self.listview.setColumnHidden(2, True)
         self.listview.setColumnHidden(3, True)
-        
+        # Allow selecting several files at once (Ctrl/Shift click) so they can be
+        # removed together.
+        self.listview.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         self.hlay.addWidget(self.listview)
 
@@ -284,8 +311,50 @@ class FileViewWidget(QtWidgets.QWidget):
         self.fileModel.setHeaderData(8, Qt.Horizontal, "Confidence")
 
         self.listview.selectionModel().selectionChanged.connect(self.on_selection_changed)
+
+        # Removed rows are hidden via the view; re-apply whenever the model
+        # repopulates or re-sorts (row order/count changes on both).
+        self.fileModel.directoryLoaded.connect(self.apply_exclusions)
+        self.fileModel.layoutChanged.connect(self.apply_exclusions)
+
+        self.remove_btn.clicked.connect(self.remove_selected)
+        self.restore_btn.clicked.connect(self.restore_all)
+
+        # Delete key removes the selected file(s) from the list.
+        del_sc = QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Delete), self.listview)
+        del_sc.setContext(QtCore.Qt.WidgetShortcut)
+        del_sc.activated.connect(self.remove_selected)
+
         self.set_root(folder)
         self.initialized = True
+
+    def remove_selected(self):
+        """Hide the currently selected file(s) from the list and skip them in
+        Process All / Save results. Does not delete anything from disk."""
+        sel_model = self.listview.selectionModel()
+        if sel_model is None:
+            return
+        for idx in sel_model.selectedRows(0):
+            path = os.path.normpath(self.fileModel.fileInfo(idx).absoluteFilePath())
+            self.fileModel.excluded.add(path)
+        self.listview.clearSelection()
+        self.apply_exclusions()
+
+    def restore_all(self):
+        """Bring back every file removed from the list."""
+        self.fileModel.excluded.clear()
+        self.apply_exclusions()
+
+    def apply_exclusions(self, *args, **kwargs):
+        """Hide rows whose file is in the model's excluded set, show the rest.
+        Row hidden-state is keyed by row number, so this must run again after any
+        sort/repopulate (hence the directoryLoaded/layoutChanged connections)."""
+        root = self.listview.rootIndex()
+        excluded = self.fileModel.excluded
+        for r in range(self.fileModel.rowCount(root)):
+            idx = self.fileModel.index(r, 0, root)
+            path = os.path.normpath(self.fileModel.fileInfo(idx).absoluteFilePath())
+            self.listview.setRowHidden(r, root, path in excluded)
  
 
     def select_fname(self, fname):
@@ -302,7 +371,10 @@ class FileViewWidget(QtWidgets.QWidget):
    
 
     def on_selection_changed(self, index: QtCore.QItemSelection):
-        index = index.indexes()[0]
+        indexes = index.indexes()
+        if not indexes:  # selection cleared (e.g. after removing files)
+            return
+        index = indexes[0]
         path = self.fileModel.fileInfo(index).absoluteFilePath()
         if '.'in path:
             ext = path.split('.')[-1]

@@ -35,19 +35,22 @@ class setpointSweep(pvModel):
         ## device speficic:
         self.tasks = {  
                         
-                        'current_setpoint_index': 
+                        'current_setpoint_index':
                                 {'desc': 'Current set-point index', 'val':0,'min':0,'max':10000,
+                                'epics_PV_out':'16bmb:us:setpoint_index',
                                 'param':{'type':'i'}},
-                        'current_setpoint': 
+                        'current_setpoint':
                                 {'desc': 'Current set-point', 'val':0., 'increment':0.01, 'min':-10e11,'max':10e11,
+                                'epics_PV_out':'16bmb:us:setpoint',
                                 'param':{'type':'f'}},
                         'setpoints':     
                                 {'desc': 'Setpoints', 'val':None, 
                                 'param':{'type':'dict'}},
-                        'run_state':     
-                                {'desc': 'Run;ON/OFF', 'val':False, 
+                        'run_state':
+                                {'desc': 'Run;ON/OFF', 'val':False,
+                                'epics_PV_out':'16bmb:us:run_state',
                                 'param':{'type':'b'}},
-                        'start_scan':     
+                        'start_scan':
                                 {'desc': '', 'val':False, 
                                 'param':{'type':'b'}},
                         'advance_to_next':     
@@ -300,14 +303,17 @@ class SweepModel(pvModel):
                         'save_data_read_channel':     
                                 {'desc': 'Save data read', 'val':'SaveData:save', 
                                 'param':{ 'type':'s'}},
-                        'start_point': 
+                        'start_point':
                                 {'desc': 'Start', 'val':10.0, 'increment':0.5,'min':.001,'max':110 ,
+                                'epics_PV_in':'16bmb:us:scan_start',
                                 'param':{ 'type':'f'}},
-                        'end_point': 
+                        'end_point':
                                 {'desc': 'End', 'val':40.0, 'increment':0.5, 'min':.002,'max':120,
+                                'epics_PV_in':'16bmb:us:scan_end',
                                 'param':{ 'type':'f'}},
-                        'n': 
+                        'n':
                                 {'desc': '#Pts', 'val':6,'min':2,'max':10000,
+                                'epics_PV_in':'16bmb:us:scan_npts',
                                 'param':{ 'type':'i'}},
                         'current_point': 
                                 {'desc': 'Set-point index', 'val':0,'min':0,'max':10000,
@@ -317,8 +323,9 @@ class SweepModel(pvModel):
                                 {'desc': 'Step size', 'val':1.0, 'min':0.001,'max':110,'increment':.1,
                                 'methods':{'set':False, 'get':True},  
                                 'param':{ 'type':'f'}},
-                        'scan_go':     
-                                {'desc': 'Scan;Go', 'val':False, 
+                        'scan_go':
+                                {'desc': 'Scan;Go', 'val':False,
+                                'epics_PV_in':'16bmb:us:go', 'epics_PV_out':'16bmb:us:go',
                                 'param':{ 'type':'b'}},
                         'scan_stop':     
                                 {'desc': 'Scan;Stop', 'val':False, 
